@@ -1,5 +1,18 @@
 (library
  (name tictactoe_logic_library)
  (libraries core)
+ (modules
+  tictactoe_logic_library
+  hw2_tictactoe_logic
+  hw4_alpha_beta_search)
+ (preprocess
+  (pps ppx_jane)))
+
+(library
+ (name backgammon_logic_library)
+ (libraries core)
+ (modules
+  hw2_backgammon_logic
+  hw4_backgammon_cpu)
  (preprocess
   (pps ppx_jane)))
