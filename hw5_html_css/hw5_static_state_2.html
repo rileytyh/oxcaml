@@ -1,0 +1,89 @@
+<!-- hw5_html_css/hw5_static_state_2.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>HW5 Static State 2 (Backgammon)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <link rel="stylesheet" href="hw5_static_state.css" />
+  <link rel="icon" href="data:," />
+</head>
+
+<body>
+  <div class="game">
+    <div class="overlay overlay-top-left">
+      <div class="overlay-title">State 2</div>
+      <div class="overlay-sub">Turn: Black | Dice left: [4]</div>
+    </div>
+
+    <div class="overlay overlay-bar">
+      <div class="overlay-title">BAR</div>
+      <div class="overlay-sub">B: 1<br/>W: 2</div>
+    </div>
+
+    <div class="overlay overlay-off">
+      <div class="overlay-title">OFF</div>
+      <div class="overlay-sub">B: 0<br/>W: 0</div>
+    </div>
+
+    <svg class="board" viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="1200" height="800" rx="24" fill="#e9dfd7"/>
+      <rect x="40" y="40" width="1120" height="720" rx="20" fill="#c8a27b"/>
+      <rect x="70" y="70" width="1060" height="660" rx="18" fill="#f3eadf"/>
+      <rect x="560" y="70" width="80" height="660" rx="10" fill="#b4875d"/>
+
+      <g opacity="0.95">
+        <polygon points="70,70 150,70 110,360" fill="#8b4a3a"/>
+        <polygon points="150,70 230,70 190,360" fill="#f1c27d"/>
+        <polygon points="230,70 310,70 270,360" fill="#8b4a3a"/>
+        <polygon points="310,70 390,70 350,360" fill="#f1c27d"/>
+        <polygon points="390,70 470,70 430,360" fill="#8b4a3a"/>
+        <polygon points="470,70 550,70 510,360" fill="#f1c27d"/>
+
+        <polygon points="650,70 730,70 690,360" fill="#f1c27d"/>
+        <polygon points="730,70 810,70 770,360" fill="#8b4a3a"/>
+        <polygon points="810,70 890,70 850,360" fill="#f1c27d"/>
+        <polygon points="890,70 970,70 930,360" fill="#8b4a3a"/>
+        <polygon points="970,70 1050,70 1010,360" fill="#f1c27d"/>
+        <polygon points="1050,70 1130,70 1090,360" fill="#8b4a3a"/>
+
+        <polygon points="70,730 150,730 110,440" fill="#f1c27d"/>
+        <polygon points="150,730 230,730 190,440" fill="#8b4a3a"/>
+        <polygon points="230,730 310,730 270,440" fill="#f1c27d"/>
+        <polygon points="310,730 390,730 350,440" fill="#8b4a3a"/>
+        <polygon points="390,730 470,730 430,440" fill="#f1c27d"/>
+        <polygon points="470,730 550,730 510,440" fill="#8b4a3a"/>
+
+        <polygon points="650,730 730,730 690,440" fill="#8b4a3a"/>
+        <polygon points="730,730 810,730 770,440" fill="#f1c27d"/>
+        <polygon points="810,730 890,730 850,440" fill="#8b4a3a"/>
+        <polygon points="890,730 970,730 930,440" fill="#f1c27d"/>
+        <polygon points="970,730 1050,730 1010,440" fill="#8b4a3a"/>
+        <polygon points="1050,730 1130,730 1090,440" fill="#f1c27d"/>
+      </g>
+
+      <!-- BAR checkers (FIXED: avoid overlay overlap, and W on top / B below) -->
+      <g>
+        <!-- B:1 (black) near top of bar -->
+        <circle cx="600" cy="170" r="26" fill="#1f1f1f"/>
+        <!-- W:2 (white) near bottom of bar -->
+        <circle cx="600" cy="650" r="26" fill="#f7f4ee" stroke="#333" stroke-width="2"/>
+        <circle cx="600" cy="600" r="26" fill="#f7f4ee" stroke="#333" stroke-width="2"/>
+      </g>
+
+      <g>
+        <circle cx="1090" cy="690" r="26" fill="#1f1f1f"/>
+        <circle cx="1090" cy="640" r="26" fill="#1f1f1f"/>
+        <text x="1125" y="675" font-size="20" font-weight="700" fill="#111">2</text>
+      </g>
+
+      <g>
+        <circle cx="110" cy="690" r="26" fill="#f7f4ee" stroke="#333" stroke-width="2"/>
+        <circle cx="110" cy="640" r="26" fill="#f7f4ee" stroke="#333" stroke-width="2"/>
+        <circle cx="110" cy="590" r="26" fill="#f7f4ee" stroke="#333" stroke-width="2"/>
+        <text x="145" y="640" font-size="20" font-weight="700" fill="#111">3</text>
+      </g>
+    </svg>
+  </div>
+</body>
+</html>
