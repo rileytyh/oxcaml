@@ -1,8 +1,14 @@
-/* --- Global Layout --- */
+/* =========================
+   Global Layout
+   ========================= */
+html, body {
+  height: 100%;
+}
+
 body {
-  font-family: sans-serif;
-  background-color: #222;
-  color: white;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background: #222;
+  color: #fff;
   margin: 0;
   min-height: 100vh;
   display: flex;
@@ -18,13 +24,19 @@ body {
   max-width: 1200px;
   margin: 0 auto;
   padding: 12px;
+  box-sizing: border-box;
 }
 
-/* --- Navigation Buttons --- */
+/* =========================
+   Buttons / Topbar
+   ========================= */
 .topbar {
   display: flex;
   gap: 12px;
   margin: 12px 0;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
 }
 
 .nav-btn {
@@ -33,7 +45,7 @@ body {
   background: #444;
   color: white;
   border: 1px solid #666;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
@@ -41,22 +53,40 @@ body {
   background: #555;
 }
 
-/* --- Game Container --- */
+.nav-btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* =========================
+   Game Container
+   ========================= */
 .game {
   position: relative;
   width: 100%;
   max-width: 900px;
 }
 
-/* This forces a visible box with the correct aspect ratio (1200x800 -> 3:2) */
+/* Aspect ratio wrapper: ensures the SVG has a real height */
 .board-wrap {
   position: relative;
   width: 100%;
-  padding-bottom: 66.66%;
-  background-color: #6F4E37; /* Fallback brown color */
+  aspect-ratio: 3 / 2;          /* modern browsers */
+  background-color: #6F4E37;     /* fallback brown */
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
 }
 
-/* SVG layers fill the wrapper and stack */
+/* fallback for older browsers without aspect-ratio */
+@supports not (aspect-ratio: 3 / 2) {
+  .board-wrap {
+    height: 0;
+    padding-bottom: 66.66%; /* 2/3 of width */
+  }
+}
+
+/* SVG layers fill the wrapper */
 .board,
 .board-overlay {
   position: absolute;
@@ -67,6 +97,7 @@ body {
   display: block;
 }
 
+/* Ensure SVG preserves its viewBox scaling properly */
 .board {
   z-index: 1;
 }
@@ -76,7 +107,15 @@ body {
   pointer-events: none;
 }
 
-/* --- Info Overlays --- */
+/* Optional: help with crisp edges */
+svg.board {
+  shape-rendering: geometricPrecision;
+  text-rendering: geometricPrecision;
+}
+
+/* =========================
+   Overlay (if you add later)
+   ========================= */
 .overlay {
   position: absolute;
   z-index: 10;
@@ -88,7 +127,7 @@ body {
 }
 
 .overlay-title {
-  font-weight: bold;
+  font-weight: 700;
   font-size: 0.9rem;
   text-transform: uppercase;
   color: #aaa;
@@ -97,24 +136,28 @@ body {
 
 .overlay-sub {
   font-size: 1.05rem;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 /* positions */
-.overlay-top-left {
-  top: 12px;
-  left: 12px;
-}
-
+.overlay-top-left { top: 12px; left: 12px; }
 .overlay-bar {
   top: 40%;
   left: 50%;
   transform: translateX(-50%);
   text-align: center;
 }
+.overlay-off { top: 40%; right: 12px; text-align: right; }
 
-.overlay-off {
-  top: 40%;
-  right: 12px;
-  text-align: right;
+/* =========================
+   Mobile tweaks
+   ========================= */
+@media (max-width: 520px) {
+  .nav-btn {
+    font-size: 0.95rem;
+    padding: 6px 8px;
+  }
+  .page {
+    padding: 10px;
+  }
 }
