@@ -12,6 +12,7 @@
  (name backgammon_logic_library)
  (libraries core)
  (modules
+  hw1_backgammon
   hw2_backgammon_logic
   hw4_backgammon_cpu)
  (preprocess

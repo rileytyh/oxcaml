@@ -93,7 +93,7 @@ let mid_board : board =
   b.(23) <- Some { owner = White; count = 1 };
   b
 
-let _mid_state : game_state =
+let mid_state : game_state =
   { board = mid_board
   ; bar_white = 0
   ; bar_black = 0
@@ -124,7 +124,7 @@ let near_win_board : board =
   b.(0) <- Some { owner = White; count = 1 };
   b
 
-let _near_win_state : game_state =
+let near_win_state : game_state =
   { board = near_win_board
   ; bar_white = 0
   ; bar_black = 0
@@ -150,6 +150,6 @@ let terminal_state : game_state =
   }
 
 let _ =
-  ignore _mid_state;
-  ignore _near_win_state
+  ignore mid_state;
+  ignore near_win_state
 ;;

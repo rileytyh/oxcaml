@@ -1,4 +1,5 @@
 open! Core
+open! Backgammon_logic_library
 open! Hw2_backgammon_logic
 open! Hw4_backgammon_cpu
 
