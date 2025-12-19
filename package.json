@@ -1,0 +1,27 @@
+{
+  "name": "oxcaml",
+  "version": "1.0.0",
+  "description": "To make a dev-environment, press the green \"Code\" button, then select \"+\" next to \"Codespaces\".  A new Codespace will open.  It currently takes 20-40 minutes to initialize; please be patient.",
+  "main": "main.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rileytyh/oxcaml.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/rileytyh/oxcaml/issues"
+  },
+  "homepage": "https://github.com/rileytyh/oxcaml#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}

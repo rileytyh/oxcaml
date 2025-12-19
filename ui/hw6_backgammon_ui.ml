@@ -10,8 +10,23 @@ open Hw2_backgammon_logic
    ============================================================================= *)
 
 let attr k v = Vdom.Attr.create k v
+let testid s = Vdom.Attr.create "data-testid" s
 let f (x : float) : string = Printf.sprintf "%g" x
 let svg tag ~attrs children = Vdom.Node.create_svg tag ~attrs children
+
+let clamp_die n = if n < 1 then 1 else if n > 6 then 6 else n
+
+let parse_dice_csv (s : string) : int list =
+  (* accepts: "3,4" "3 4" "3, 4,6" *)
+  s
+  |> String.map ~f:(fun c -> if Char.equal c ',' then ' ' else c)
+  |> String.split ~on:' '
+  |> List.filter ~f:(fun x -> not (String.is_empty (String.strip x)))
+  |> List.filter_map ~f:(fun tok ->
+    match Int.of_string_opt (String.strip tok) with
+    | None -> None
+    | Some n ->
+      if 1 <= n && n <= 6 then Some n else None)
 
 let roll_dice_list () : int list =
   let d1 = Random.int 6 + 1 in
@@ -37,12 +52,25 @@ let whose_turn_and_dice (st : Game_state.t) : Player_kind.t option * int list =
   | Decision.In_progress { whose_turn; dice_left } -> Some whose_turn, dice_left
 ;;
 
+let player_to_string = function
+  | Player_kind.White -> "white"
+  | Player_kind.Black -> "black"
+;;
+
 (* =============================================================================
    UI model
    ============================================================================= *)
 
 module Selected_source = struct
   type t = Location.t option [@@deriving sexp, compare, equal]
+end
+
+module Debug_open = struct
+  type t = bool [@@deriving sexp, compare, equal]
+end
+
+module Debug_dice = struct
+  type t = string [@@deriving sexp, compare, equal]
 end
 
 type phase =
@@ -240,6 +268,7 @@ let checker_node ~cx ~cy ~r ~(owner : Player_kind.t) =
       ; attr "fill" fill
       ; attr "stroke" stroke
       ; attr "stroke-width" sw
+      ; attr "pointer-events" "none" 
       ]
     []
 ;;
@@ -272,6 +301,7 @@ let stack_on_point_nodes ~x ~y ~dir ~w ~h ~owner ~count =
             ; attr "font-size" "12"
             ; attr "font-weight" "700"
             ; attr "fill" (match owner with Player_kind.Black -> "#ffffff" | Player_kind.White -> "#111111")
+            ; attr "pointer-events" "none"
             ]
           [ Vdom.Node.text (Int.to_string count) ]
       ]
@@ -281,8 +311,13 @@ let stack_on_point_nodes ~x ~y ~dir ~w ~h ~owner ~count =
   circles @ count_label
 ;;
 
-let point_node ~point_num ~(stack : Game_state.point_stack option) ~x ~y ~dir ~w ~h
-  ~is_selected ~is_valid_source ~is_valid_dest ~on_click =
+let point_node
+  ~point_num
+  ~(stack : Game_state.point_stack option)
+  ~x ~y ~dir ~w ~h
+  ~is_selected ~is_valid_source ~is_valid_dest
+  ~on_click
+  =
   let (_bsurf, _bborder, _bbar, point_light, point_dark, selection, valid_source, _bf, _bs, _wf, _ws) = colors in
   let is_even = (point_num mod 2) = 0 in
   let fill = if is_even then point_light else point_dark in
@@ -300,6 +335,10 @@ let point_node ~point_num ~(stack : Game_state.point_stack option) ~x ~y ~dir ~w
          ; attr "fill" fill
          ; attr "stroke" stroke
          ; attr "stroke-width" stroke_w
+         ; attr "data-testid" (sprintf "point-%d" point_num)
+         ; attr "data-point" (Int.to_string point_num)
+         ; attr "role" (if clickable then "button" else "img")
+         ; attr "aria-label" (sprintf "point %d" point_num)
          ]
          @ (if String.is_empty dash then [] else [ attr "stroke-dasharray" dash ])
          @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
@@ -311,7 +350,53 @@ let point_node ~point_num ~(stack : Game_state.point_stack option) ~x ~y ~dir ~w
     | Some { owner; count } ->
       stack_on_point_nodes ~x ~y ~dir ~w ~h ~owner ~count
   in
-  svg "g" ~attrs:[] (triangle :: stacks)
+  let first_checker_ring =
+    match stack with
+    | Some { owner = _; count } when count > 0 && (is_valid_source || is_selected) ->
+      let visible = Int.min count 5 in
+      let idx = Int.max 0 (visible - 1) in
+      let checker_r = (w /. 2.0) -. 4.0 in
+      let checker_spacing = Float.min (checker_r *. 2.0) (h /. 6.0) in
+
+      let cy =
+        match dir with
+        | Down -> y +. checker_r +. 4.0 +. (Float.of_int idx *. checker_spacing)
+        | Up   -> y +. h -. checker_r -. 4.0 -. (Float.of_int idx *. checker_spacing)
+      in
+
+      let ring = "#60a5fa" in
+
+      [ 
+        svg "circle"
+          ~attrs:
+            [ attr "cx" (f (x +. (w /. 2.0)))
+            ; attr "cy" (f cy)
+            ; attr "r"  (f (checker_r +. 5.5))
+            ; attr "fill" "none"
+            ; attr "stroke" "rgba(96,165,250,0.35)"
+            ; attr "stroke-width" "6"
+            ; attr "style" "pointer-events:none"
+            ]
+          []
+      ; 
+        svg "circle"
+          ~attrs:
+            [ attr "cx" (f (x +. (w /. 2.0)))
+            ; attr "cy" (f cy)
+            ; attr "r"  (f (checker_r +. 2.6))
+            ; attr "fill" "none"
+            ; attr "stroke" ring
+            ; attr "stroke-width" "3"
+            ; attr "style"
+                ("pointer-events:none;"
+                ^ "filter: drop-shadow(0 0 6px " ^ ring ^ ") "
+                ^ "drop-shadow(0 0 12px rgba(96,165,250,0.8));")
+            ]
+          []
+      ]
+    | _ -> []
+  in
+  svg "g" ~attrs:[] (triangle :: (stacks @ first_checker_ring))
 ;;
 
 let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
@@ -325,6 +410,7 @@ let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
     else "none", "0"
   in
   let clickable = is_selected || is_valid_source in
+  let testid = sprintf "bar-%s" (player_to_string p) in
   let highlight =
     if is_selected || is_valid_source then
       [ svg "rect"
@@ -333,15 +419,33 @@ let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
              ; attr "y" (f (y +. 2.0))
              ; attr "width" (f (w -. 4.0))
              ; attr "height" (f (h -. 4.0))
-             ; attr "fill" "none"
+             ; attr "fill" "transparent"
+             ; attr "style" "cursor:pointer;pointer-events:all"
              ; attr "stroke" stroke
              ; attr "stroke-width" sw
              ; attr "rx" "2"
+             ; attr "data-testid" testid
+             ; attr "role" "button"
+             ; attr "aria-label" testid
              ]
              @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
           []
       ]
-    else []
+    else
+      [ svg "rect"
+          ~attrs:
+            [ attr "x" (f (x +. 2.0))
+            ; attr "y" (f (y +. 2.0))
+            ; attr "width" (f (w -. 4.0))
+            ; attr "height" (f (h -. 4.0))
+            ; attr "fill" "transparent"
+            ; attr "stroke" "transparent"
+            ; attr "data-testid" testid
+            ; attr "role" "img"
+            ; attr "aria-label" testid
+            ]
+          []
+      ]
   in
   let visible = Int.min count 4 in
   let circles =
@@ -376,6 +480,7 @@ let bear_off_node ~p ~count ~x ~y ~w ~h ~is_valid_dest ~on_click =
   let sw = if is_valid_dest then "2" else "1" in
   let dash = if is_valid_dest then "4,4" else "" in
   let clickable = is_valid_dest in
+  let testid = sprintf "off-%s" (player_to_string p) in
   let container =
     svg "rect"
       ~attrs:
@@ -387,6 +492,9 @@ let bear_off_node ~p ~count ~x ~y ~w ~h ~is_valid_dest ~on_click =
          ; attr "stroke" stroke
          ; attr "stroke-width" sw
          ; attr "rx" "2"
+         ; attr "data-testid" testid
+         ; attr "role" (if clickable then "button" else "img")
+         ; attr "aria-label" testid
          ]
          @ (if String.is_empty dash then [] else [ attr "stroke-dasharray" dash ])
          @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
@@ -461,6 +569,7 @@ let render_svg
         ; attr "stroke" board_border
         ; attr "stroke-width" "2"
         ; attr "rx" "4"
+        ; attr "data-testid" "board-bg"
         ]
       []
   in
@@ -473,6 +582,7 @@ let render_svg
         ; attr "width" (f bar_w)
         ; attr "height" (f board_height)
         ; attr "fill" board_bar
+        ; attr "data-testid" "board-bar"
         ]
       []
   in
@@ -598,7 +708,6 @@ let render_svg
       label_node ~x:(point_x idx +. (point_width /. 2.0)) ~y:(board_height +. 18.0) ~txt:(Int.to_string pt))
   in
 
-  (* 关键：这里用 100%/100% 配合 .board-wrap 的 padding-bottom 产生高度 *)
   svg "svg"
     ~attrs:
       [ attr "viewBox" (sprintf "0 0 %s %s" (f svg_w) (f svg_h))
@@ -606,6 +715,7 @@ let render_svg
       ; attr "width" "100%"
       ; attr "height" "100%"
       ; Vdom.Attr.class_ "board"
+      ; attr "data-testid" "board-svg"
       ]
     (bg
      :: bar_bg
@@ -621,28 +731,66 @@ let render_svg
    ============================================================================= *)
 
 let dice_view (dice_left : int list) =
-  let die_box n =
-    let style =
-      String.concat
-        ~sep:";"
-        [ "width:40px"
-        ; "height:40px"
-        ; "display:flex"
-        ; "align-items:center"
-        ; "justify-content:center"
-        ; "border:2px solid #fff"
-        ; "border-radius:8px"
-        ; "font-size:18px"
-        ; "font-weight:800"
-        ; "background:#111"
-        ]
+  let pip_offsets n =
+    (* returns list of (dx,dy) in {-1,0,1} grid coords *)
+    match n with
+    | 1 -> [ 0, 0 ]
+    | 2 -> [ -1, -1; 1, 1 ]
+    | 3 -> [ -1, -1; 0, 0; 1, 1 ]
+    | 4 -> [ -1, -1; 1, -1; -1, 1; 1, 1 ]
+    | 5 -> [ -1, -1; 1, -1; 0, 0; -1, 1; 1, 1 ]
+    | 6 -> [ -1, -1; -1, 0; -1, 1; 1, -1; 1, 0; 1, 1 ]
+    | _ -> [ 0, 0 ]
+  in
+  let die_svg idx n =
+    let size = 40.0 in
+    let r = 8.0 in
+    let pip_r = 3.2 in
+    let cx0 = size /. 2.0 in
+    let cy0 = size /. 2.0 in
+    let step = 10.0 in
+    let pips =
+      pip_offsets n
+      |> List.map ~f:(fun (dx, dy) ->
+        svg "circle"
+          ~attrs:
+            [ attr "cx" (f (cx0 +. (Float.of_int dx *. step)))
+            ; attr "cy" (f (cy0 +. (Float.of_int dy *. step)))
+            ; attr "r" (f pip_r)
+            ; attr "fill" "#fff"
+            ]
+          [])
     in
-    Vdom.Node.div ~attrs:[ attr "style" style ] [ Vdom.Node.text (Int.to_string n) ]
+    svg "svg"
+      ~attrs:
+        [ attr "width" "40"
+        ; attr "height" "40"
+        ; attr "viewBox" "0 0 40 40"
+        ; attr "data-testid" (sprintf "die-%d" idx)
+        ]
+      (svg "rect"
+         ~attrs:
+           [ attr "x" "1.5"
+           ; attr "y" "1.5"
+           ; attr "width" "37"
+           ; attr "height" "37"
+           ; attr "rx" (f r)
+           ; attr "fill" "#111"
+           ; attr "stroke" "#fff"
+           ; attr "stroke-width" "2"
+           ]
+         []
+       :: pips)
   in
   Vdom.Node.div
-    ~attrs:[ attr "style" "display:flex;gap:10px;justify-content:center;align-items:center;padding:10px 0;" ]
-    (List.map dice_left ~f:die_box)
+    ~attrs:
+      [ attr "style"
+          "display:flex;gap:10px;justify-content:center;align-items:center;padding:10px 0;"
+      ; attr "data-testid" "dice-row"
+      ]
+    (List.mapi dice_left ~f:(fun idx n -> die_svg idx n))
 ;;
+
 
 let status_text ~(st : Game_state.t) ~(selected : Location.t option) =
   match st.decision with
@@ -660,13 +808,14 @@ let status_text ~(st : Game_state.t) ~(selected : Location.t option) =
     sprintf "%s — %s" turn phase
 ;;
 
-let small_btn ~label ~disabled ~on_click =
+let small_btn ~testid ~label ~disabled ~on_click =
   Vdom.Node.button
     ~attrs:
       ([ Vdom.Attr.class_ "nav-btn"
-       ; Vdom.Attr.on_click (fun _ -> on_click)
+       ; attr "data-testid" testid
+       ; attr "aria-label" label
        ]
-       @ if disabled then [ attr "disabled" "true" ] else [])
+       @ (if disabled then [ attr "disabled" "true" ] else [ Vdom.Attr.on_click (fun _ -> on_click) ]))
     [ Vdom.Node.text label ]
 ;;
 
@@ -684,11 +833,17 @@ let app_component =
 
   let%sub st, set_st = Bonsai.state ~default_model:initial_state (module Game_state) in
   let%sub selected, set_selected = Bonsai.state ~default_model:None (module Selected_source) in
+  let%sub debug_open, set_debug_open = Bonsai.state ~default_model:false (module Debug_open) in
+  let%sub debug_dice, set_debug_dice = Bonsai.state ~default_model:"6,6" (module Debug_dice) in
 
   let%arr st = st
   and set_st = set_st
   and selected = selected
-  and set_selected = set_selected in
+  and set_selected = set_selected
+  and debug_open = debug_open
+  and set_debug_open = set_debug_open
+  and debug_dice = debug_dice
+  and set_debug_dice = set_debug_dice in
 
   let p_opt, dice_left = whose_turn_and_dice st in
   let ph = phase_of ~st ~selected in
@@ -740,6 +895,20 @@ let app_component =
         Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
 
+  (* Debug: force dice to a stable value for tests *)
+  let do_apply_debug_dice =
+    match st.decision with
+    | Decision.Winner _ -> Vdom.Effect.Ignore
+    | Decision.In_progress { whose_turn; _ } ->
+      let dice = parse_dice_csv debug_dice in
+      if List.is_empty dice then Vdom.Effect.Ignore
+      else
+        let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
+        Vdom.Effect.Many [ set_st st'; set_selected None ]
+  in
+
+  let do_toggle_debug = set_debug_open (not debug_open) in
+
   let handle_click_source (loc : Location.t) =
     match ph, p_opt with
     | Select_source, Some _
@@ -755,7 +924,7 @@ let app_component =
       (match choose_die_for_dest ~st ~p ~dice_left ~source ~dest with
        | None -> Vdom.Effect.Ignore
        | Some die ->
-         let move = { Move.from_ = source; die } in
+         let move = { Move.from_ = source; die = clamp_die die } in
          (match Game_state.make_move st move with
           | Error _ -> Vdom.Effect.Ignore
           | Ok st' -> Vdom.Effect.Many [ set_st st'; set_selected None ]))
@@ -790,21 +959,31 @@ let app_component =
 
   let title =
     Vdom.Node.div
-      ~attrs:[ attr "style" "text-align:center;font-size:24px;font-weight:800;margin-top:6px;margin-bottom:8px;" ]
+      ~attrs:[ attr "style" "text-align:center;font-size:24px;font-weight:800;margin-top:6px;margin-bottom:8px;"; attr "data-testid" "title" ]
       [ Vdom.Node.text "Backgammon" ]
   in
 
   let status_bar =
     let text = status_text ~st ~selected in
+    let turn_txt =
+      match p_opt with
+      | None -> "none"
+      | Some p -> player_to_string p
+    in
     Vdom.Node.div
       ~attrs:
-        [ attr "style"
+        [ testid "status"
+        ; attr "style"
             "display:flex;justify-content:space-between;gap:12px;align-items:center;\
              background:#333;border:1px solid #555;border-radius:10px;padding:10px 12px;margin-bottom:10px;"
+        ; attr "data-testid" "status-bar"
         ]
-      [ Vdom.Node.div ~attrs:[ attr "style" "font-weight:700;font-size:14px;" ] [ Vdom.Node.text text ]
-      ; Vdom.Node.div ~attrs:[ attr "style" "font-size:12px;color:#ccc;" ]
-          [ Vdom.Node.text (sprintf "Off: B %d / W %d" st.off_black st.off_white) ]
+      [ Vdom.Node.div
+          ~attrs:[ attr "style" "font-weight:700;font-size:14px;"; attr "data-testid" "status-text" ]
+          [ Vdom.Node.text text ]
+      ; Vdom.Node.div
+          ~attrs:[ attr "style" "font-size:12px;color:#ccc;"; attr "data-testid" "status-meta" ]
+          [ Vdom.Node.text (sprintf "turn=%s | Off: B %d / W %d" turn_txt st.off_black st.off_white) ]
       ]
   in
 
@@ -845,22 +1024,59 @@ let app_component =
       | Winner -> "New Game?"
     in
     Vdom.Node.div
-      ~attrs:[ Vdom.Attr.class_ "topbar" ]
-      [ small_btn ~label:"New Game" ~disabled:false ~on_click:do_new_game
-      ; small_btn ~label:"Roll" ~disabled:roll_disabled ~on_click:do_roll
-      ; small_btn ~label:"End Turn" ~disabled:end_turn_disabled ~on_click:do_end_turn
-      ; small_btn ~label:"Cancel" ~disabled:cancel_disabled ~on_click:do_cancel
-      ; Vdom.Node.div ~attrs:[ attr "style" "text-align:center;color:#bbb;font-size:13px;padding:6px 0;" ]
+      ~attrs:[ Vdom.Attr.class_ "topbar"; attr "data-testid" "controls" ]
+      [ small_btn ~testid:"btn-new" ~label:"New Game" ~disabled:false ~on_click:do_new_game
+      ; small_btn ~testid:"btn-roll" ~label:"Roll" ~disabled:roll_disabled ~on_click:do_roll
+      ; small_btn ~testid:"btn-end" ~label:"End Turn" ~disabled:end_turn_disabled ~on_click:do_end_turn
+      ; small_btn ~testid:"btn-cancel" ~label:"Cancel" ~disabled:cancel_disabled ~on_click:do_cancel
+      ; small_btn ~testid:"btn-debug" ~label:"Debug" ~disabled:false ~on_click:do_toggle_debug
+      ; Vdom.Node.div ~attrs:[ attr "style" "text-align:center;color:#bbb;font-size:13px;padding:6px 0;"; attr "data-testid" "hint" ]
           [ Vdom.Node.text hint_txt ]
       ]
   in
 
-  (* 关键：用你 CSS 设计的 .game + .board-wrap 结构 *)
+  let debug_panel =
+    if not debug_open then Vdom.Node.none
+    else
+      Vdom.Node.div
+        ~attrs:
+          [ attr "data-testid" "debug-panel"
+          ; attr "style"
+              "margin-top:10px;padding:10px;border:1px dashed #666;border-radius:10px;background:#222;color:#ddd;"
+          ]
+        [ Vdom.Node.div
+            ~attrs:[ attr "style" "font-weight:800;margin-bottom:6px;" ]
+            [ Vdom.Node.text "Debug (for tests)" ]
+        ; Vdom.Node.div
+            ~attrs:[ attr "style" "display:flex;gap:8px;align-items:center;flex-wrap:wrap;" ]
+            [ Vdom.Node.label
+                ~attrs:[ attr "style" "font-size:12px;color:#bbb;"; attr "for" "debug-dice" ]
+                [ Vdom.Node.text "Force dice (e.g. 6,6 or 3,4):" ]
+            ; Vdom.Node.input
+                ~attrs:
+                  [ attr "id" "debug-dice"
+                  ; attr "data-testid" "debug-dice-input"
+                  ; attr "value" debug_dice
+                  ; attr "style" "padding:6px 8px;border-radius:8px;border:1px solid #555;background:#111;color:#eee;"
+                  ; Vdom.Attr.on_input (fun _ s -> set_debug_dice s)
+                  ]
+                ()
+            ; Vdom.Node.button
+                ~attrs:
+                  [ attr "data-testid" "debug-apply"
+                  ; attr "style" "padding:6px 10px;border-radius:8px;border:1px solid #777;background:#111;color:#eee;cursor:pointer;"
+                  ; Vdom.Attr.on_click (fun _ -> do_apply_debug_dice)
+                  ]
+                [ Vdom.Node.text "Apply Dice" ]
+            ]
+        ]
+  in
+
   let game_area =
     Vdom.Node.div
-      ~attrs:[ Vdom.Attr.class_ "game" ]
+      ~attrs:[ Vdom.Attr.class_ "game"; attr "data-testid" "game" ]
       [ Vdom.Node.div
-          ~attrs:[ Vdom.Attr.class_ "board-wrap" ]
+          ~attrs:[ Vdom.Attr.class_ "board-wrap"; attr "data-testid" "board-wrap" ]
           [ board_svg ]
       ]
   in
@@ -868,11 +1084,12 @@ let app_component =
   let dice_row = if List.is_empty dice_left then Vdom.Node.none else dice_view dice_left in
 
   Vdom.Node.div
-    ~attrs:[ Vdom.Attr.class_ "page" ]
+    ~attrs:[ Vdom.Attr.class_ "page"; attr "data-testid" "page" ]
     [ title
     ; status_bar
     ; game_area
     ; dice_row
+    ; debug_panel
     ; buttons
     ]
 ;;
