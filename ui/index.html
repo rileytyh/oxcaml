@@ -6,11 +6,78 @@
     <title>Backgammon</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="icon" href="data:," />
-    <!-- You will generate/copy this from _build/default/ui/hw6_backgammon_ui.bc.js -->
+
+    <!-- 1) Firebase init + expose bindings (NO sign-in here) -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+      import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+      import {
+        getFirestore,
+        collection,
+        doc,
+        getDocs,
+        getDoc,
+        addDoc,
+        setDoc,
+        updateDoc,
+        onSnapshot,
+        serverTimestamp,
+        query,
+        where,
+        limit
+      } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+      const firebaseConfig = {
+        apiKey: "AIzaSyCn7ZyEKhQy30ifch4oql8E3uL81O1_Yz0",
+        authDomain: "backgammon-game1.firebaseapp.com",
+        projectId: "backgammon-game1",
+        storageBucket: "backgammon-game1.firebasestorage.app",
+        messagingSenderId: "607056940980",
+        appId: "1:607056940980:web:4eda69927ea168b0faace1"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+
+      // expose bindings for firebase_debug.js to use
+      window.__firebaseBindings = {
+        app,
+        auth,
+        db,
+
+        // auth
+        signInAnonymously,
+
+        // firestore fns
+        collection,
+        doc,
+        getDocs,
+        getDoc,
+        addDoc,
+        setDoc,
+        updateDoc,
+        onSnapshot,
+        serverTimestamp,
+        query,
+        where,
+        limit
+      };
+
+      console.log("[firebase:init] bindings ready");
+    </script>
+
+    <!-- 2) Anonymous sign-in -> window.firebaseEnv (must run BEFORE quickmatch) -->
+    <script defer src="firebase_debug.js"></script>
+
+    <!-- 3) js_of_ocaml output (creates UI + exports ocamlRemote if you added bridge code) -->
     <script defer src="main.js"></script>
+
+    <!-- 4) Quickmatch + Firestore room sync UI -->
+    <script defer src="quickmatch.js"></script>
   </head>
+
   <body>
-    <!-- Bonsai will mount into body; #app is optional, but harmless -->
     <div id="app"></div>
   </body>
 </html>

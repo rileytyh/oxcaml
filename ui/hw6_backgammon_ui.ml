@@ -1,6 +1,7 @@
 open! Core
 open Virtual_dom
 open! Bonsai.Let_syntax
+open Js_of_ocaml
 
 open Backgammon_logic_library
 open Hw2_backgammon_logic
@@ -25,8 +26,7 @@ let parse_dice_csv (s : string) : int list =
   |> List.filter_map ~f:(fun tok ->
     match Int.of_string_opt (String.strip tok) with
     | None -> None
-    | Some n ->
-      if 1 <= n && n <= 6 then Some n else None)
+    | Some n -> if 1 <= n && n <= 6 then Some n else None)
 
 let roll_dice_list () : int list =
   let d1 = Random.int 6 + 1 in
@@ -56,6 +56,40 @@ let player_to_string = function
   | Player_kind.White -> "white"
   | Player_kind.Black -> "black"
 ;;
+
+(* =============================================================================
+   Debug visibility via URL: ?debug=1
+   ============================================================================= *)
+
+let url_debug_enabled () : bool =
+  (* Accept: ?debug=1 / ?debug=true / ?debug=yes / ?debug *)
+  let location = Js.Unsafe.get Dom_html.window "location" in
+  let search = Js.to_string (Js.Unsafe.get location "search") in
+  let s =
+    match String.chop_prefix search ~prefix:"?" with
+    | Some x -> x
+    | None -> search
+  in
+  if String.is_empty s then false
+  else
+    let parts = String.split s ~on:'&' in
+    let is_truthy = function
+      | None -> true
+      | Some v ->
+        let v = String.lowercase (String.strip v) in
+        String.equal v "1"
+        || String.equal v "true"
+        || String.equal v "yes"
+        || String.equal v "on"
+    in
+    List.exists parts ~f:(fun kv ->
+      match String.lsplit2 kv ~on:'=' with
+      | None ->
+        (* e.g. "?debug" *)
+        String.equal (String.lowercase (String.strip kv)) "debug"
+      | Some (k, v) ->
+        let k = String.lowercase (String.strip k) in
+        if String.equal k "debug" then is_truthy (Some v) else false)
 
 (* =============================================================================
    UI model
@@ -191,7 +225,11 @@ let implied_dest_if_legal
      | Location.Off -> None)
 ;;
 
-let valid_destinations_for_source ~(st : Game_state.t) ~(p : Player_kind.t) ~(dice_left : int list) ~(source : Location.t)
+let valid_destinations_for_source
+  ~(st : Game_state.t)
+  ~(p : Player_kind.t)
+  ~(dice_left : int list)
+  ~(source : Location.t)
   : Location.t list
   =
   dice_left
@@ -268,7 +306,7 @@ let checker_node ~cx ~cy ~r ~(owner : Player_kind.t) =
       ; attr "fill" fill
       ; attr "stroke" stroke
       ; attr "stroke-width" sw
-      ; attr "pointer-events" "none" 
+      ; attr "pointer-events" "none"
       ]
     []
 ;;
@@ -357,17 +395,13 @@ let point_node
       let idx = Int.max 0 (visible - 1) in
       let checker_r = (w /. 2.0) -. 4.0 in
       let checker_spacing = Float.min (checker_r *. 2.0) (h /. 6.0) in
-
       let cy =
         match dir with
         | Down -> y +. checker_r +. 4.0 +. (Float.of_int idx *. checker_spacing)
         | Up   -> y +. h -. checker_r -. 4.0 -. (Float.of_int idx *. checker_spacing)
       in
-
       let ring = "#60a5fa" in
-
-      [ 
-        svg "circle"
+      [ svg "circle"
           ~attrs:
             [ attr "cx" (f (x +. (w /. 2.0)))
             ; attr "cy" (f cy)
@@ -378,8 +412,7 @@ let point_node
             ; attr "style" "pointer-events:none"
             ]
           []
-      ; 
-        svg "circle"
+      ; svg "circle"
           ~attrs:
             [ attr "cx" (f (x +. (w /. 2.0)))
             ; attr "cy" (f cy)
@@ -639,8 +672,12 @@ let render_svg
       ~y:top_y
       ~w:bar_w
       ~h:half_h
-      ~is_selected:(selected_is Location.Bar && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.Black))
-      ~is_valid_source:(is_valid_source_loc Location.Bar && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.Black))
+      ~is_selected:
+        (selected_is Location.Bar
+         && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.Black))
+      ~is_valid_source:
+        (is_valid_source_loc Location.Bar
+         && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.Black))
       ~on_click:(on_click_bar ())
   in
 
@@ -652,8 +689,12 @@ let render_svg
       ~y:bottom_y
       ~w:bar_w
       ~h:half_h
-      ~is_selected:(selected_is Location.Bar && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.White))
-      ~is_valid_source:(is_valid_source_loc Location.Bar && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.White))
+      ~is_selected:
+        (selected_is Location.Bar
+         && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.White))
+      ~is_valid_source:
+        (is_valid_source_loc Location.Bar
+         && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.White))
       ~on_click:(on_click_bar ())
   in
 
@@ -668,7 +709,9 @@ let render_svg
       ~y:bottom_y
       ~w:bearoff_w
       ~h:half_h
-      ~is_valid_dest:(is_valid_dest_loc Location.Off && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.Black))
+      ~is_valid_dest:
+        (is_valid_dest_loc Location.Off
+         && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.Black))
       ~on_click:(on_click_bearoff Player_kind.Black)
   in
 
@@ -680,7 +723,9 @@ let render_svg
       ~y:top_y
       ~w:bearoff_w
       ~h:half_h
-      ~is_valid_dest:(is_valid_dest_loc Location.Off && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.White))
+      ~is_valid_dest:
+        (is_valid_dest_loc Location.Off
+         && Option.value_map p ~default:false ~f:(Player_kind.equal Player_kind.White))
       ~on_click:(on_click_bearoff Player_kind.White)
   in
 
@@ -705,7 +750,10 @@ let render_svg
   let labels_bottom =
     bottom_points
     |> List.mapi ~f:(fun idx pt ->
-      label_node ~x:(point_x idx +. (point_width /. 2.0)) ~y:(board_height +. 18.0) ~txt:(Int.to_string pt))
+      label_node
+        ~x:(point_x idx +. (point_width /. 2.0))
+        ~y:(board_height +. 18.0)
+        ~txt:(Int.to_string pt))
   in
 
   svg "svg"
@@ -732,7 +780,6 @@ let render_svg
 
 let dice_view (dice_left : int list) =
   let pip_offsets n =
-    (* returns list of (dx,dy) in {-1,0,1} grid coords *)
     match n with
     | 1 -> [ 0, 0 ]
     | 2 -> [ -1, -1; 1, 1 ]
@@ -791,15 +838,23 @@ let dice_view (dice_left : int list) =
     (List.mapi dice_left ~f:(fun idx n -> die_svg idx n))
 ;;
 
-
 let status_text ~(st : Game_state.t) ~(selected : Location.t option) =
   match st.decision with
   | Decision.Winner w ->
-    sprintf "%s wins!" (match w with Player_kind.White -> "White" | Player_kind.Black -> "Black")
+    sprintf
+      "%s wins!"
+      (match w with
+       | Player_kind.White -> "White"
+       | Player_kind.Black -> "Black")
   | Decision.In_progress { whose_turn; dice_left } ->
-    let turn = match whose_turn with Player_kind.White -> "White" | Player_kind.Black -> "Black" in
+    let turn =
+      match whose_turn with
+      | Player_kind.White -> "White"
+      | Player_kind.Black -> "Black"
+    in
     let phase =
-      if List.is_empty dice_left then "Roll dice"
+      if List.is_empty dice_left
+      then "Roll dice"
       else (
         match selected with
         | None -> "Select a highlighted piece"
@@ -824,6 +879,8 @@ let small_btn ~testid ~label ~disabled ~on_click =
    ============================================================================= *)
 
 let app_component =
+  let debug_allowed = url_debug_enabled () in
+
   let initial_state =
     match Game_state.create () with
     | Ok st ->
@@ -866,7 +923,9 @@ let app_component =
     match Game_state.create () with
     | Error _ -> Vdom.Effect.Ignore
     | Ok st0 ->
-      let st1 = { st0 with decision = Decision.In_progress { whose_turn = Player_kind.White; dice_left = [] } } in
+      let st1 =
+        { st0 with decision = Decision.In_progress { whose_turn = Player_kind.White; dice_left = [] } }
+      in
       Vdom.Effect.Many [ set_st st1; set_selected None ]
   in
 
@@ -874,7 +933,8 @@ let app_component =
     match st.decision with
     | Decision.Winner _ -> Vdom.Effect.Ignore
     | Decision.In_progress { whose_turn; dice_left = dl } ->
-      if not (List.is_empty dl) then Vdom.Effect.Ignore
+      if not (List.is_empty dl)
+      then Vdom.Effect.Ignore
       else
         let dice = roll_dice_list () in
         let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
@@ -887,10 +947,14 @@ let app_component =
     match st.decision with
     | Decision.Winner _ -> Vdom.Effect.Ignore
     | Decision.In_progress { whose_turn; dice_left = dl } ->
-      if List.is_empty dl then Vdom.Effect.Ignore
+      if List.is_empty dl
+      then Vdom.Effect.Ignore
       else
         let st' =
-          { st with decision = Decision.In_progress { whose_turn = Player_kind.opposite whose_turn; dice_left = [] } }
+          { st with
+            decision =
+              Decision.In_progress { whose_turn = Player_kind.opposite whose_turn; dice_left = [] }
+          }
         in
         Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
@@ -901,19 +965,24 @@ let app_component =
     | Decision.Winner _ -> Vdom.Effect.Ignore
     | Decision.In_progress { whose_turn; _ } ->
       let dice = parse_dice_csv debug_dice in
-      if List.is_empty dice then Vdom.Effect.Ignore
+      if List.is_empty dice
+      then Vdom.Effect.Ignore
       else
         let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
         Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
 
-  let do_toggle_debug = set_debug_open (not debug_open) in
+  let do_toggle_debug =
+    if not debug_allowed then Vdom.Effect.Ignore else set_debug_open (not debug_open)
+  in
 
   let handle_click_source (loc : Location.t) =
     match ph, p_opt with
     | Select_source, Some _
     | Select_destination, Some _ ->
-      if List.mem valid_srcs loc ~equal:Location.equal then set_selected (Some loc) else Vdom.Effect.Ignore
+      if List.mem valid_srcs loc ~equal:Location.equal
+      then set_selected (Some loc)
+      else Vdom.Effect.Ignore
     | _ -> Vdom.Effect.Ignore
   in
 
@@ -959,7 +1028,11 @@ let app_component =
 
   let title =
     Vdom.Node.div
-      ~attrs:[ attr "style" "text-align:center;font-size:24px;font-weight:800;margin-top:6px;margin-bottom:8px;"; attr "data-testid" "title" ]
+      ~attrs:
+        [ attr "style"
+            "text-align:center;font-size:24px;font-weight:800;margin-top:6px;margin-bottom:8px;"
+        ; attr "data-testid" "title"
+        ]
       [ Vdom.Node.text "Backgammon" ]
   in
 
@@ -1025,18 +1098,27 @@ let app_component =
     in
     Vdom.Node.div
       ~attrs:[ Vdom.Attr.class_ "topbar"; attr "data-testid" "controls" ]
-      [ small_btn ~testid:"btn-new" ~label:"New Game" ~disabled:false ~on_click:do_new_game
-      ; small_btn ~testid:"btn-roll" ~label:"Roll" ~disabled:roll_disabled ~on_click:do_roll
-      ; small_btn ~testid:"btn-end" ~label:"End Turn" ~disabled:end_turn_disabled ~on_click:do_end_turn
-      ; small_btn ~testid:"btn-cancel" ~label:"Cancel" ~disabled:cancel_disabled ~on_click:do_cancel
-      ; small_btn ~testid:"btn-debug" ~label:"Debug" ~disabled:false ~on_click:do_toggle_debug
-      ; Vdom.Node.div ~attrs:[ attr "style" "text-align:center;color:#bbb;font-size:13px;padding:6px 0;"; attr "data-testid" "hint" ]
-          [ Vdom.Node.text hint_txt ]
-      ]
+      ([
+         small_btn ~testid:"btn-new" ~label:"New Game" ~disabled:false ~on_click:do_new_game
+       ; small_btn ~testid:"btn-roll" ~label:"Roll" ~disabled:roll_disabled ~on_click:do_roll
+       ; small_btn ~testid:"btn-end" ~label:"End Turn" ~disabled:end_turn_disabled ~on_click:do_end_turn
+       ; small_btn ~testid:"btn-cancel" ~label:"Cancel" ~disabled:cancel_disabled ~on_click:do_cancel
+       ]
+       @ (if debug_allowed
+          then [ small_btn ~testid:"btn-debug" ~label:"Debug" ~disabled:false ~on_click:do_toggle_debug ]
+          else [])
+       @ [ Vdom.Node.div
+             ~attrs:
+               [ attr "style" "text-align:center;color:#bbb;font-size:13px;padding:6px 0;"
+               ; attr "data-testid" "hint"
+               ]
+             [ Vdom.Node.text hint_txt ]
+         ])
   in
 
   let debug_panel =
-    if not debug_open then Vdom.Node.none
+    if (not debug_allowed) || (not debug_open)
+    then Vdom.Node.none
     else
       Vdom.Node.div
         ~attrs:
@@ -1057,14 +1139,16 @@ let app_component =
                   [ attr "id" "debug-dice"
                   ; attr "data-testid" "debug-dice-input"
                   ; attr "value" debug_dice
-                  ; attr "style" "padding:6px 8px;border-radius:8px;border:1px solid #555;background:#111;color:#eee;"
+                  ; attr "style"
+                      "padding:6px 8px;border-radius:8px;border:1px solid #555;background:#111;color:#eee;"
                   ; Vdom.Attr.on_input (fun _ s -> set_debug_dice s)
                   ]
                 ()
             ; Vdom.Node.button
                 ~attrs:
                   [ attr "data-testid" "debug-apply"
-                  ; attr "style" "padding:6px 10px;border-radius:8px;border:1px solid #777;background:#111;color:#eee;cursor:pointer;"
+                  ; attr "style"
+                      "padding:6px 10px;border-radius:8px;border:1px solid #777;background:#111;color:#eee;cursor:pointer;"
                   ; Vdom.Attr.on_click (fun _ -> do_apply_debug_dice)
                   ]
                 [ Vdom.Node.text "Apply Dice" ]
