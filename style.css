@@ -1,0 +1,163 @@
+/* =========================
+   Global Layout
+   ========================= */
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background: #222;
+  color: #fff;
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+}
+
+/* page container */
+.page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+/* =========================
+   Buttons / Topbar
+   ========================= */
+.topbar {
+  display: flex;
+  gap: 12px;
+  margin: 12px 0;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+.nav-btn {
+  padding: 6px 10px;
+  font-size: 1rem;
+  background: #444;
+  color: white;
+  border: 1px solid #666;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.nav-btn:hover {
+  background: #555;
+}
+
+.nav-btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* =========================
+   Game Container
+   ========================= */
+.game {
+  position: relative;
+  width: 100%;
+  max-width: 900px;
+}
+
+/* Aspect ratio wrapper: ensures the SVG has a real height */
+.board-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 2;          /* modern browsers */
+  background-color: #6F4E37;     /* fallback brown */
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+/* fallback for older browsers without aspect-ratio */
+@supports not (aspect-ratio: 3 / 2) {
+  .board-wrap {
+    height: 0;
+    padding-bottom: 66.66%; /* 2/3 of width */
+  }
+}
+
+/* SVG layers fill the wrapper */
+.board,
+.board-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Ensure SVG preserves its viewBox scaling properly */
+.board {
+  z-index: 1;
+}
+
+.board-overlay {
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Optional: help with crisp edges */
+svg.board {
+  shape-rendering: geometricPrecision;
+  text-rendering: geometricPrecision;
+}
+
+/* =========================
+   Overlay (if you add later)
+   ========================= */
+.overlay {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 10px 15px;
+  border-radius: 10px;
+  color: white;
+}
+
+.overlay-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  color: #aaa;
+  margin-bottom: 4px;
+}
+
+.overlay-sub {
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+/* positions */
+.overlay-top-left { top: 12px; left: 12px; }
+.overlay-bar {
+  top: 40%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+.overlay-off { top: 40%; right: 12px; text-align: right; }
+
+/* =========================
+   Mobile tweaks
+   ========================= */
+@media (max-width: 520px) {
+  .nav-btn {
+    font-size: 0.95rem;
+    padding: 6px 8px;
+  }
+  .page {
+    padding: 10px;
+  }
+}
