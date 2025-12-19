@@ -1,3 +1,5 @@
+(* ui/hw6_backgammon_ui.ml *)
+
 open! Core
 open Virtual_dom
 open! Bonsai.Let_syntax
@@ -58,6 +60,65 @@ let player_to_string = function
 ;;
 
 (* =============================================================================
+   JS bridge: OCaml <-> Firebase/Quickmatch JS
+   - JS sets: window.firebaseEnv.sendState = async (sexpString) => { ... }
+   - OCaml exposes: window.ocamlRemote.set_state(sexpString)
+                 and window.ocamlRemote.request_send()
+   ============================================================================= *)
+
+module Js_bridge = struct
+  (* Keep a cached snapshot of the latest OCaml state as S-expression. *)
+  let latest_state_sexp : string ref = ref ""
+
+  let set_latest_state (sexp : string) =
+    latest_state_sexp := sexp
+
+  (* Safely read window.firebaseEnv.<field> as string option *)
+  let get_firebase_string_field (field : string) : string option =
+    try
+      let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
+      let v = Js.Unsafe.get env field in
+      match Js.to_string (Js.typeof v) with
+      | "string" -> Some (Js.to_string v)
+      | _ -> None
+    with
+    | _ -> None
+
+  (* Read role set by quickmatch.js: window.firebaseEnv.role = "white" | "black" *)
+  let get_firebase_role () : string option =
+    get_firebase_string_field "role"
+
+  (* Send the given S-expression to JS (Firebase) if possible. *)
+  let send_state (sexp : string) : unit =
+    try
+      let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
+      let f = Js.Unsafe.get env "sendState" in
+      ignore (Js.Unsafe.fun_call f [| Js.Unsafe.inject (Js.string sexp) |])
+    with
+    | _ -> ()
+
+  (* Ask JS to send the latest cached state. *)
+  let _request_send_latest () : unit =
+    send_state !latest_state_sexp
+
+  (* Expose OCaml entrypoints for JS:
+     - set_state(sexpString): apply remote state coming from Firestore
+     - request_send(): ask OCaml to re-send its current state (e.g. after match)
+  *)
+  let expose_ocaml_remote
+      ~(apply_remote : string -> unit)
+      ~(request_send : unit -> unit)
+    =
+    let remote = Js.Unsafe.obj [||] in
+    Js.Unsafe.set remote "set_state"
+      (Js.wrap_callback (fun (s : Js.js_string Js.t) ->
+         apply_remote (Js.to_string s)));
+    Js.Unsafe.set remote "request_send"
+      (Js.wrap_callback (fun () -> request_send ()));
+    Js.Unsafe.set Dom_html.window "ocamlRemote" remote
+end
+
+(* =============================================================================
    Debug visibility via URL: ?debug=1
    ============================================================================= *)
 
@@ -105,6 +166,10 @@ end
 
 module Debug_dice = struct
   type t = string [@@deriving sexp, compare, equal]
+end
+
+module Last_sent = struct
+  type t = string option [@@deriving sexp, compare, equal]
 end
 
 type phase =
@@ -349,89 +414,6 @@ let stack_on_point_nodes ~x ~y ~dir ~w ~h ~owner ~count =
   circles @ count_label
 ;;
 
-let point_node
-  ~point_num
-  ~(stack : Game_state.point_stack option)
-  ~x ~y ~dir ~w ~h
-  ~is_selected ~is_valid_source ~is_valid_dest
-  ~on_click
-  =
-  let (_bsurf, _bborder, _bbar, point_light, point_dark, selection, valid_source, _bf, _bs, _wf, _ws) = colors in
-  let is_even = (point_num mod 2) = 0 in
-  let fill = if is_even then point_light else point_dark in
-  let stroke, stroke_w, dash =
-    if is_selected then selection, "3", ""
-    else if is_valid_dest then selection, "2", "4,4"
-    else if is_valid_source then valid_source, "2", ""
-    else "none", "0", ""
-  in
-  let clickable = is_selected || is_valid_source || is_valid_dest in
-  let triangle =
-    svg "polygon"
-      ~attrs:
-        ([ attr "points" (triangle_points ~x ~y ~w ~h ~dir)
-         ; attr "fill" fill
-         ; attr "stroke" stroke
-         ; attr "stroke-width" stroke_w
-         ; attr "data-testid" (sprintf "point-%d" point_num)
-         ; attr "data-point" (Int.to_string point_num)
-         ; attr "role" (if clickable then "button" else "img")
-         ; attr "aria-label" (sprintf "point %d" point_num)
-         ]
-         @ (if String.is_empty dash then [] else [ attr "stroke-dasharray" dash ])
-         @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
-      []
-  in
-  let stacks =
-    match stack with
-    | None -> []
-    | Some { owner; count } ->
-      stack_on_point_nodes ~x ~y ~dir ~w ~h ~owner ~count
-  in
-  let first_checker_ring =
-    match stack with
-    | Some { owner = _; count } when count > 0 && (is_valid_source || is_selected) ->
-      let visible = Int.min count 5 in
-      let idx = Int.max 0 (visible - 1) in
-      let checker_r = (w /. 2.0) -. 4.0 in
-      let checker_spacing = Float.min (checker_r *. 2.0) (h /. 6.0) in
-      let cy =
-        match dir with
-        | Down -> y +. checker_r +. 4.0 +. (Float.of_int idx *. checker_spacing)
-        | Up   -> y +. h -. checker_r -. 4.0 -. (Float.of_int idx *. checker_spacing)
-      in
-      let ring = "#60a5fa" in
-      [ svg "circle"
-          ~attrs:
-            [ attr "cx" (f (x +. (w /. 2.0)))
-            ; attr "cy" (f cy)
-            ; attr "r"  (f (checker_r +. 5.5))
-            ; attr "fill" "none"
-            ; attr "stroke" "rgba(96,165,250,0.35)"
-            ; attr "stroke-width" "6"
-            ; attr "style" "pointer-events:none"
-            ]
-          []
-      ; svg "circle"
-          ~attrs:
-            [ attr "cx" (f (x +. (w /. 2.0)))
-            ; attr "cy" (f cy)
-            ; attr "r"  (f (checker_r +. 2.6))
-            ; attr "fill" "none"
-            ; attr "stroke" ring
-            ; attr "stroke-width" "3"
-            ; attr "style"
-                ("pointer-events:none;"
-                ^ "filter: drop-shadow(0 0 6px " ^ ring ^ ") "
-                ^ "drop-shadow(0 0 12px rgba(96,165,250,0.8));")
-            ]
-          []
-      ]
-    | _ -> []
-  in
-  svg "g" ~attrs:[] (triangle :: (stacks @ first_checker_ring))
-;;
-
 let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
   if count <= 0 then Vdom.Node.none else
   let (_bsurf, _bborder, _bbar, _pl, _pd, selection, valid_source, _bf, _bs, _wf, _ws) = colors in
@@ -445,40 +427,23 @@ let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
   let clickable = is_selected || is_valid_source in
   let testid = sprintf "bar-%s" (player_to_string p) in
   let highlight =
-    if is_selected || is_valid_source then
-      [ svg "rect"
-          ~attrs:
-            ([ attr "x" (f (x +. 2.0))
-             ; attr "y" (f (y +. 2.0))
-             ; attr "width" (f (w -. 4.0))
-             ; attr "height" (f (h -. 4.0))
-             ; attr "fill" "transparent"
-             ; attr "style" "cursor:pointer;pointer-events:all"
-             ; attr "stroke" stroke
-             ; attr "stroke-width" sw
-             ; attr "rx" "2"
-             ; attr "data-testid" testid
-             ; attr "role" "button"
-             ; attr "aria-label" testid
-             ]
-             @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
-          []
-      ]
-    else
-      [ svg "rect"
-          ~attrs:
-            [ attr "x" (f (x +. 2.0))
-            ; attr "y" (f (y +. 2.0))
-            ; attr "width" (f (w -. 4.0))
-            ; attr "height" (f (h -. 4.0))
-            ; attr "fill" "transparent"
-            ; attr "stroke" "transparent"
-            ; attr "data-testid" testid
-            ; attr "role" "img"
-            ; attr "aria-label" testid
-            ]
-          []
-      ]
+    [ svg "rect"
+        ~attrs:
+          ([ attr "x" (f (x +. 2.0))
+           ; attr "y" (f (y +. 2.0))
+           ; attr "width" (f (w -. 4.0))
+           ; attr "height" (f (h -. 4.0))
+           ; attr "fill" "transparent"
+           ; attr "stroke" stroke
+           ; attr "stroke-width" sw
+           ; attr "rx" "2"
+           ; attr "data-testid" testid
+           ; attr "role" (if clickable then "button" else "img")
+           ; attr "aria-label" testid
+           ]
+           @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
+        []
+    ]
   in
   let visible = Int.min count 4 in
   let circles =
@@ -589,7 +554,7 @@ let render_svg
   ~(on_click_bar : unit -> unit Vdom.Effect.t)
   ~(on_click_bearoff : Player_kind.t -> unit Vdom.Effect.t)
   =
-  let (board_surface, board_border, board_bar, _pl, _pd, _sel, _vs, _bf, _bs, _wf, _ws) = colors in
+  let (board_surface, board_border, board_bar, point_light, point_dark, selection, valid_source, _black_fill, _black_stroke, _white_fill, _white_stroke) = colors in
 
   let bg =
     svg "rect"
@@ -623,6 +588,47 @@ let render_svg
   let is_valid_source_loc loc = List.mem valid_srcs loc ~equal:Location.equal in
   let is_valid_dest_loc loc = List.mem valid_dests loc ~equal:Location.equal in
   let selected_is loc = Option.value_map selected ~default:false ~f:(Location.equal loc) in
+
+  let point_node
+    ~point_num
+    ~(stack : Game_state.point_stack option)
+    ~x ~y ~dir ~w ~h
+    ~is_selected ~is_valid_source ~is_valid_dest
+    ~on_click
+    =
+    let is_even = (point_num mod 2) = 0 in
+    let fill = if is_even then point_light else point_dark in
+    let stroke, stroke_w, dash =
+      if is_selected then selection, "3", ""
+      else if is_valid_dest then selection, "2", "4,4"
+      else if is_valid_source then valid_source, "2", ""
+      else "none", "0", ""
+    in
+    let clickable = is_selected || is_valid_source || is_valid_dest in
+    let triangle =
+      svg "polygon"
+        ~attrs:
+          ([ attr "points" (triangle_points ~x ~y ~w ~h ~dir)
+           ; attr "fill" fill
+           ; attr "stroke" stroke
+           ; attr "stroke-width" stroke_w
+           ; attr "data-testid" (sprintf "point-%d" point_num)
+           ; attr "data-point" (Int.to_string point_num)
+           ; attr "role" (if clickable then "button" else "img")
+           ; attr "aria-label" (sprintf "point %d" point_num)
+           ]
+           @ (if String.is_empty dash then [] else [ attr "stroke-dasharray" dash ])
+           @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
+        []
+    in
+    let stacks =
+      match stack with
+      | None -> []
+      | Some { owner; count } ->
+        stack_on_point_nodes ~x ~y ~dir ~w ~h ~owner ~count
+    in
+    svg "g" ~attrs:[] (triangle :: stacks)
+  in
 
   let points_top =
     top_points
@@ -790,11 +796,10 @@ let dice_view (dice_left : int list) =
     | _ -> [ 0, 0 ]
   in
   let die_svg idx n =
-    let size = 40.0 in
     let r = 8.0 in
     let pip_r = 3.2 in
-    let cx0 = size /. 2.0 in
-    let cy0 = size /. 2.0 in
+    let cx0 = 20.0 in
+    let cy0 = 20.0 in
     let step = 10.0 in
     let pips =
       pip_offsets n
@@ -892,6 +897,65 @@ let app_component =
   let%sub selected, set_selected = Bonsai.state ~default_model:None (module Selected_source) in
   let%sub debug_open, set_debug_open = Bonsai.state ~default_model:false (module Debug_open) in
   let%sub debug_dice, set_debug_dice = Bonsai.state ~default_model:"6,6" (module Debug_dice) in
+  let%sub last_sent, set_last_sent = Bonsai.state ~default_model:None (module Last_sent) in
+
+  (* Expose window.ocamlRemote.set_state + request_send once on mount *)
+  let%sub () =
+    Bonsai.Edge.lifecycle
+      ~on_activate:
+        (let%map set_st = set_st
+         and set_selected = set_selected
+         and set_last_sent = set_last_sent
+         in
+         let sync_fn () =
+           Js_bridge.expose_ocaml_remote
+             ~apply_remote:(fun sexp_str ->
+                 try
+                   let st_remote =
+                     Game_state.t_of_sexp (Sexplib.Sexp.of_string sexp_str)
+                   in
+                   let eff =
+                     Vdom.Effect.Many
+                       [ set_last_sent (Some sexp_str)
+                       ; set_st st_remote
+                       ; set_selected None
+                       ]
+                   in
+                   (* fabricate a dummy DOM event for Expert.handle *)
+                   let dummy_ev : #Dom_html.event Js.t =
+                     Obj.magic (Js.Unsafe.obj [||])
+                   in
+                   (Bonsai_web.Effect.Expert.handle dummy_ev eff : unit)
+                 with
+                 | _ -> ())
+             ~request_send:(fun () ->
+                 let s = !(Js_bridge.latest_state_sexp) in
+                 if not (String.is_empty (String.strip s)) then
+                   Js_bridge.send_state s)
+         in
+         (Vdom.Effect.of_sync_fun sync_fn) ())
+      ()
+  in
+
+  (* Whenever local state changes, push it to Firestore (if sendState is ready). *)
+  let%sub () =
+    Bonsai.Edge.on_change
+      (module String)
+      (let%map st = st in
+       let s = Sexplib.Sexp.to_string (Game_state.sexp_of_t st) in
+       Js_bridge.latest_state_sexp := s;
+       s)
+      ~callback:
+        (let%map last_sent = last_sent
+         and set_last_sent = set_last_sent in
+         fun sexp_str ->
+           match last_sent with
+           | Some s when String.equal s sexp_str ->
+             Vdom.Effect.Ignore
+           | _ ->
+             Js_bridge.send_state sexp_str;
+             set_last_sent (Some sexp_str))
+  in
 
   let%arr st = st
   and set_st = set_st
@@ -905,10 +969,30 @@ let app_component =
   let p_opt, dice_left = whose_turn_and_dice st in
   let ph = phase_of ~st ~selected in
 
+  (* turn-gate (who am I?) — single source of truth *)
+  let my_role_opt : Player_kind.t option =
+    match Js_bridge.get_firebase_role () with
+    | Some r ->
+      (match String.lowercase (String.strip r) with
+       | "white" -> Some Player_kind.White
+       | "black" -> Some Player_kind.Black
+       | _ -> None)
+    | None -> None
+  in
+
+  let can_interact =
+    match my_role_opt, p_opt with
+    | Some mine, Some turn -> Player_kind.equal mine turn
+    | _ -> false
+  in
+
   let valid_srcs =
-    match p_opt with
-    | None -> []
-    | Some p -> valid_sources ~st ~p ~dice_left
+    if not can_interact
+    then []
+    else
+      match p_opt with
+      | None -> []
+      | Some p -> valid_sources ~st ~p ~dice_left
   in
 
   let valid_dests =
@@ -930,46 +1014,52 @@ let app_component =
   in
 
   let do_roll =
-    match st.decision with
-    | Decision.Winner _ -> Vdom.Effect.Ignore
-    | Decision.In_progress { whose_turn; dice_left = dl } ->
-      if not (List.is_empty dl)
-      then Vdom.Effect.Ignore
-      else
-        let dice = roll_dice_list () in
-        let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
-        Vdom.Effect.Many [ set_st st'; set_selected None ]
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match st.decision with
+      | Decision.Winner _ -> Vdom.Effect.Ignore
+      | Decision.In_progress { whose_turn; dice_left = dl } ->
+        if not (List.is_empty dl)
+        then Vdom.Effect.Ignore
+        else
+          let dice = roll_dice_list () in
+          let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
+          Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
 
-  let do_cancel = set_selected None in
+  let do_cancel = if not can_interact then Vdom.Effect.Ignore else set_selected None in
 
   let do_end_turn =
-    match st.decision with
-    | Decision.Winner _ -> Vdom.Effect.Ignore
-    | Decision.In_progress { whose_turn; dice_left = dl } ->
-      if List.is_empty dl
-      then Vdom.Effect.Ignore
-      else
-        let st' =
-          { st with
-            decision =
-              Decision.In_progress { whose_turn = Player_kind.opposite whose_turn; dice_left = [] }
-          }
-        in
-        Vdom.Effect.Many [ set_st st'; set_selected None ]
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match st.decision with
+      | Decision.Winner _ -> Vdom.Effect.Ignore
+      | Decision.In_progress { whose_turn; dice_left = dl } ->
+        if List.is_empty dl
+        then Vdom.Effect.Ignore
+        else
+          let st' =
+            { st with
+              decision =
+                Decision.In_progress { whose_turn = Player_kind.opposite whose_turn; dice_left = [] }
+            }
+          in
+          Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
 
   (* Debug: force dice to a stable value for tests *)
   let do_apply_debug_dice =
-    match st.decision with
-    | Decision.Winner _ -> Vdom.Effect.Ignore
-    | Decision.In_progress { whose_turn; _ } ->
-      let dice = parse_dice_csv debug_dice in
-      if List.is_empty dice
-      then Vdom.Effect.Ignore
-      else
-        let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
-        Vdom.Effect.Many [ set_st st'; set_selected None ]
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match st.decision with
+      | Decision.Winner _ -> Vdom.Effect.Ignore
+      | Decision.In_progress { whose_turn; _ } ->
+        let dice = parse_dice_csv debug_dice in
+        if List.is_empty dice
+        then Vdom.Effect.Ignore
+        else
+          let st' = { st with decision = Decision.In_progress { whose_turn; dice_left = dice } } in
+          Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
 
   let do_toggle_debug =
@@ -977,15 +1067,20 @@ let app_component =
   in
 
   let handle_click_source (loc : Location.t) =
-    match ph, p_opt with
-    | Select_source, Some _
-    | Select_destination, Some _ ->
-      if List.mem valid_srcs loc ~equal:Location.equal
-      then set_selected (Some loc)
-      else Vdom.Effect.Ignore
-    | _ -> Vdom.Effect.Ignore
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match ph, p_opt with
+      | Select_source, Some _
+      | Select_destination, Some _ ->
+        if List.mem valid_srcs loc ~equal:Location.equal
+        then set_selected (Some loc)
+        else Vdom.Effect.Ignore
+      | _ -> Vdom.Effect.Ignore
   in
 
+  (* ========================================================================= *)
+  (* Apply a move: update local state (on_change will push to Firebase)          *)
+  (* ========================================================================= *)
   let apply_move ~(source : Location.t) ~(dest : Location.t) =
     match p_opt with
     | None -> Vdom.Effect.Ignore
@@ -994,36 +1089,45 @@ let app_component =
        | None -> Vdom.Effect.Ignore
        | Some die ->
          let move = { Move.from_ = source; die = clamp_die die } in
-         (match Game_state.make_move st move with
-          | Error _ -> Vdom.Effect.Ignore
-          | Ok st' -> Vdom.Effect.Many [ set_st st'; set_selected None ]))
+         match Game_state.make_move st move with
+         | Error _ -> Vdom.Effect.Ignore
+         | Ok st' ->
+           let sexp = Sexplib.Sexp.to_string (Game_state.sexp_of_t st') in
+           Js_bridge.set_latest_state sexp;
+           Vdom.Effect.Many [ set_st st'; set_selected None ])
   in
 
   let handle_click_point (pt : int) =
-    let loc = Location.Point pt in
-    match ph, selected with
-    | Select_source, _ -> handle_click_source loc
-    | Select_destination, Some src ->
-      if List.mem valid_dests loc ~equal:Location.equal
-      then apply_move ~source:src ~dest:loc
-      else handle_click_source loc
-    | _ -> Vdom.Effect.Ignore
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      let loc = Location.Point pt in
+      match ph, selected with
+      | Select_source, _ -> handle_click_source loc
+      | Select_destination, Some src ->
+        if List.mem valid_dests loc ~equal:Location.equal
+        then apply_move ~source:src ~dest:loc
+        else handle_click_source loc
+      | _ -> Vdom.Effect.Ignore
   in
 
   let handle_click_bar () =
-    match ph with
-    | Select_source
-    | Select_destination -> handle_click_source Location.Bar
-    | _ -> Vdom.Effect.Ignore
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match ph with
+      | Select_source
+      | Select_destination -> handle_click_source Location.Bar
+      | _ -> Vdom.Effect.Ignore
   in
 
   let handle_click_bearoff (_p : Player_kind.t) =
-    match ph, selected with
-    | Select_destination, Some src ->
-      if List.mem valid_dests Location.Off ~equal:Location.equal
-      then apply_move ~source:src ~dest:Location.Off
-      else Vdom.Effect.Ignore
-    | _ -> Vdom.Effect.Ignore
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match ph, selected with
+      | Select_destination, Some src ->
+        if List.mem valid_dests Location.Off ~equal:Location.equal
+        then apply_move ~source:src ~dest:Location.Off
+        else Vdom.Effect.Ignore
+      | _ -> Vdom.Effect.Ignore
   in
 
   let title =
@@ -1043,6 +1147,12 @@ let app_component =
       | None -> "none"
       | Some p -> player_to_string p
     in
+    let me_txt =
+      match my_role_opt with
+      | None -> "unknown"
+      | Some Player_kind.White -> "white"
+      | Some Player_kind.Black -> "black"
+    in
     Vdom.Node.div
       ~attrs:
         [ testid "status"
@@ -1056,7 +1166,9 @@ let app_component =
           [ Vdom.Node.text text ]
       ; Vdom.Node.div
           ~attrs:[ attr "style" "font-size:12px;color:#ccc;"; attr "data-testid" "status-meta" ]
-          [ Vdom.Node.text (sprintf "turn=%s | Off: B %d / W %d" turn_txt st.off_black st.off_white) ]
+          [ Vdom.Node.text
+              (sprintf "me=%s | turn=%s | Off: B %d / W %d" me_txt turn_txt st.off_black st.off_white)
+          ]
       ]
   in
 
@@ -1075,26 +1187,32 @@ let app_component =
   let buttons =
     let roll_disabled =
       match ph with
-      | Roll_dice -> false
+      | Roll_dice -> (not can_interact)
       | _ -> true
     in
     let end_turn_disabled =
-      match ph with
-      | Select_source
-      | Select_destination -> List.is_empty dice_left
-      | _ -> true
+      if not can_interact then true
+      else
+        match ph with
+        | Select_source
+        | Select_destination -> List.is_empty dice_left
+        | _ -> true
     in
     let cancel_disabled =
-      match ph with
-      | Select_destination -> false
-      | _ -> true
+      if not can_interact then true
+      else
+        match ph with
+        | Select_destination -> false
+        | _ -> true
     in
     let hint_txt =
-      match ph with
-      | Roll_dice -> "Click Roll"
-      | Select_source -> if has_any_move then "Tap a green source" else "No moves — End Turn"
-      | Select_destination -> "Tap a blue destination (or Cancel)"
-      | Winner -> "New Game?"
+      if not can_interact then "Waiting for opponent…"
+      else
+        match ph with
+        | Roll_dice -> "Click Roll"
+        | Select_source -> if has_any_move then "Tap a green source" else "No moves — End Turn"
+        | Select_destination -> "Tap a blue destination (or Cancel)"
+        | Winner -> "New Game?"
     in
     Vdom.Node.div
       ~attrs:[ Vdom.Attr.class_ "topbar"; attr "data-testid" "controls" ]

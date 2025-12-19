@@ -1,4 +1,5 @@
 // ui/quickmatch.js
+
 async function waitFirebaseReady(timeoutMs = 8000) {
   const start = Date.now();
   while (true) {
@@ -226,6 +227,11 @@ async function setupUI() {
         });
       };
 
+      // IMPORTANT: after match + sendState ready, ask OCaml to flush current state once
+      if (window.ocamlRemote && typeof window.ocamlRemote.request_send === "function") {
+        window.ocamlRemote.request_send();
+      }
+
       // Firestore -> OCaml
       const roomRef = doc(db, "rooms", roomId);
       if (typeof unsub === "function") unsub();
@@ -238,7 +244,7 @@ async function setupUI() {
         else if (d.by === uid) oppLine.textContent = "You moved.";
 
         if (d.stateSexp && d.by && d.by !== uid) {
-          // prevent immediate echo
+          // prevent immediate echo (best-effort)
           window.firebaseEnv._suppressSendUntil = Date.now() + 250;
 
           if (window.ocamlRemote && typeof window.ocamlRemote.set_state === "function") {
