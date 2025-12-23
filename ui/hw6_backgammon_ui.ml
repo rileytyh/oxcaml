@@ -84,9 +84,51 @@ module Js_bridge = struct
     with
     | _ -> None
 
+  (* NEW: Safely read window.firebaseEnv.<field> as bool option *)
+  let get_firebase_bool_field (field : string) : bool option =
+    try
+      let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
+      let v = Js.Unsafe.get env field in
+      match Js.to_string (Js.typeof v) with
+      | "boolean" -> Some (Js.to_bool v)
+      | "string" ->
+        let s = String.strip (String.lowercase (Js.to_string v)) in
+        if String.equal s "true" || String.equal s "1" || String.equal s "yes" then Some true
+        else if String.equal s "false" || String.equal s "0" || String.equal s "no" then Some false
+        else None
+      | _ -> None
+    with
+    | _ -> None
+
+  let get_firebase_room_has_state () : bool option =
+    get_firebase_bool_field "roomHasState"
+
   (* Read role set by quickmatch.js: window.firebaseEnv.role = "white" | "black" *)
   let get_firebase_role () : string option =
     get_firebase_string_field "role"
+
+  (* uid / room / status *)
+  let get_firebase_uid () : string option =
+    get_firebase_string_field "uid"
+
+  let get_firebase_room_id () : string option =
+    (* quickmatch.js uses roomId *)
+    get_firebase_string_field "roomId"
+
+  let get_firebase_status () : string option =
+    get_firebase_string_field "status"
+
+  (* Call a zero-arg JS function: window.firebaseEnv.<name>() *)
+  let call_env0 (name : string) : unit =
+    try
+      let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
+      let f = Js.Unsafe.get env name in
+      let ty = Js.to_string (Js.typeof f) in
+      if String.equal ty "function"
+      then ignore (Js.Unsafe.fun_call f [||])
+      else ()
+    with
+    | _ -> ()
 
   (* Send the given S-expression to JS (Firebase) if possible. *)
   let send_state (sexp : string) : unit =
@@ -96,10 +138,6 @@ module Js_bridge = struct
       ignore (Js.Unsafe.fun_call f [| Js.Unsafe.inject (Js.string sexp) |])
     with
     | _ -> ()
-
-  (* Ask JS to send the latest cached state. *)
-  let _request_send_latest () : unit =
-    send_state !latest_state_sexp
 
   (* Expose OCaml entrypoints for JS:
      - set_state(sexpString): apply remote state coming from Firestore
@@ -137,20 +175,20 @@ let url_debug_enabled () : bool =
     let is_truthy = function
       | None -> true
       | Some v ->
-        let v = String.lowercase (String.strip v) in
-        String.equal v "1"
-        || String.equal v "true"
-        || String.equal v "yes"
-        || String.equal v "on"
+        let v = String.strip v in
+        String.Caseless.equal v "1"
+        || String.Caseless.equal v "true"
+        || String.Caseless.equal v "yes"
+        || String.Caseless.equal v "on"
     in
     List.exists parts ~f:(fun kv ->
       match String.lsplit2 kv ~on:'=' with
       | None ->
         (* e.g. "?debug" *)
-        String.equal (String.lowercase (String.strip kv)) "debug"
+        String.Caseless.equal (String.strip kv) "debug"
       | Some (k, v) ->
-        let k = String.lowercase (String.strip k) in
-        if String.equal k "debug" then is_truthy (Some v) else false)
+        let k = String.strip k in
+        if String.Caseless.equal k "debug" then is_truthy (Some v) else false)
 
 (* =============================================================================
    UI model
@@ -170,6 +208,34 @@ end
 
 module Last_sent = struct
   type t = string option [@@deriving sexp, compare, equal]
+end
+
+module Opt_string = struct
+  type t = string option [@@deriving sexp, compare, equal]
+end
+
+(* NEW *)
+module Opt_bool = struct
+  type t = bool option [@@deriving sexp, compare, equal]
+end
+
+(* NEW: have we applied at least one remote state? *)
+module Seen_remote = struct
+  type t = bool [@@deriving sexp, compare, equal]
+end
+
+(* NEW: suppress echo-send when applying remote state *)
+module Applying_remote = struct
+  type t = bool [@@deriving sexp, compare, equal]
+end
+
+(* (A) payload module *)
+module Push_payload = struct
+  type t =
+    { sexp : string
+    ; should_send : bool
+    }
+  [@@deriving sexp, compare, equal]
 end
 
 type phase =
@@ -425,7 +491,7 @@ let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
     else "none", "0"
   in
   let clickable = is_selected || is_valid_source in
-  let testid = sprintf "bar-%s" (player_to_string p) in
+  let tid = sprintf "bar-%s" (player_to_string p) in
   let highlight =
     [ svg "rect"
         ~attrs:
@@ -437,9 +503,9 @@ let bar_node ~p ~count ~x ~y ~w ~h ~is_selected ~is_valid_source ~on_click =
            ; attr "stroke" stroke
            ; attr "stroke-width" sw
            ; attr "rx" "2"
-           ; attr "data-testid" testid
+           ; attr "data-testid" tid
            ; attr "role" (if clickable then "button" else "img")
-           ; attr "aria-label" testid
+           ; attr "aria-label" tid
            ]
            @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
         []
@@ -478,7 +544,7 @@ let bear_off_node ~p ~count ~x ~y ~w ~h ~is_valid_dest ~on_click =
   let sw = if is_valid_dest then "2" else "1" in
   let dash = if is_valid_dest then "4,4" else "" in
   let clickable = is_valid_dest in
-  let testid = sprintf "off-%s" (player_to_string p) in
+  let tid = sprintf "off-%s" (player_to_string p) in
   let container =
     svg "rect"
       ~attrs:
@@ -490,9 +556,9 @@ let bear_off_node ~p ~count ~x ~y ~w ~h ~is_valid_dest ~on_click =
          ; attr "stroke" stroke
          ; attr "stroke-width" sw
          ; attr "rx" "2"
-         ; attr "data-testid" testid
+         ; attr "data-testid" tid
          ; attr "role" (if clickable then "button" else "img")
-         ; attr "aria-label" testid
+         ; attr "aria-label" tid
          ]
          @ (if String.is_empty dash then [] else [ attr "stroke-dasharray" dash ])
          @ (if clickable then [ Vdom.Attr.on_click (fun _ -> on_click); attr "style" "cursor:pointer" ] else []))
@@ -899,6 +965,79 @@ let app_component =
   let%sub debug_dice, set_debug_dice = Bonsai.state ~default_model:"6,6" (module Debug_dice) in
   let%sub last_sent, set_last_sent = Bonsai.state ~default_model:None (module Last_sent) in
 
+  (* NEW: env state (so OCaml re-renders when JS changes firebaseEnv fields) *)
+  let%sub env_uid, set_env_uid = Bonsai.state ~default_model:None (module Opt_string) in
+  let%sub env_room, set_env_room = Bonsai.state ~default_model:None (module Opt_string) in
+  let%sub env_status, set_env_status = Bonsai.state ~default_model:None (module Opt_string) in
+  let%sub env_role, set_env_role = Bonsai.state ~default_model:None (module Opt_string) in
+
+  (* NEW: roomHasState propagated from JS *)
+  let%sub env_room_has_state, set_env_room_has_state =
+    Bonsai.state ~default_model:None (module Opt_bool)
+  in
+
+  (* NEW: have we already applied remote state? (prevents black from overwriting room on mount) *)
+  let%sub seen_remote, set_seen_remote =
+    Bonsai.state ~default_model:false (module Seen_remote)
+  in
+
+  (* NEW: applying_remote gate (prevents echo send after set_state) *)
+  let%sub applying_remote, set_applying_remote =
+    Bonsai.state ~default_model:false (module Applying_remote)
+  in
+
+  (* NEW: listen to window "firebaseEnvChanged" and copy fields into Bonsai state *)
+  let%sub () =
+    Bonsai.Edge.lifecycle
+      ~on_activate:
+        (let%map set_env_uid = set_env_uid
+         and set_env_room = set_env_room
+         and set_env_status = set_env_status
+         and set_env_role = set_env_role
+         and set_env_room_has_state = set_env_room_has_state
+         in
+         (* 1) initial sync as an Effect *)
+         let initial_eff =
+           Vdom.Effect.Many
+             [ set_env_uid (Js_bridge.get_firebase_uid ())
+             ; set_env_room (Js_bridge.get_firebase_room_id ())
+             ; set_env_status (Js_bridge.get_firebase_status ())
+             ; set_env_role (Js_bridge.get_firebase_role ())
+             ; set_env_room_has_state (Js_bridge.get_firebase_room_has_state ())
+             ]
+         in
+         (* 2) attach event listener (sync callback uses Expert.handle) *)
+         let attach () =
+           let cb =
+             Js.wrap_callback (fun (ev_any : Js.Unsafe.any) ->
+               let ev : Dom_html.event Js.t = Obj.magic ev_any in
+               let eff =
+                 Vdom.Effect.Many
+                   [ set_env_uid (Js_bridge.get_firebase_uid ())
+                   ; set_env_room (Js_bridge.get_firebase_room_id ())
+                   ; set_env_status (Js_bridge.get_firebase_status ())
+                   ; set_env_role (Js_bridge.get_firebase_role ())
+                   ; set_env_room_has_state (Js_bridge.get_firebase_room_has_state ())
+                   ]
+               in
+               ignore (Bonsai_web.Effect.Expert.handle ev eff : unit))
+           in
+           (* window.addEventListener("firebaseEnvChanged", cb, false) *)
+           ignore
+             (Js.Unsafe.meth_call
+                Dom_html.window
+                "addEventListener"
+                [| Js.Unsafe.inject (Js.string "firebaseEnvChanged")
+                 ; Js.Unsafe.inject cb
+                 ; Js.Unsafe.inject Js._false
+                |]);
+           (* prevent GC *)
+           Js.Unsafe.set Dom_html.window "__ocamlFirebaseCb" cb
+         in
+         Vdom.Effect.Many [ Vdom.Effect.of_sync_fun attach (); initial_eff ])
+      ()
+  in
+
   (* Expose window.ocamlRemote.set_state + request_send once on mount *)
   let%sub () =
     Bonsai.Edge.lifecycle
@@ -906,6 +1045,8 @@ let app_component =
         (let%map set_st = set_st
          and set_selected = set_selected
          and set_last_sent = set_last_sent
+         and set_seen_remote = set_seen_remote
+         and set_applying_remote = set_applying_remote
          in
          let sync_fn () =
            Js_bridge.expose_ocaml_remote
@@ -916,12 +1057,13 @@ let app_component =
                    in
                    let eff =
                      Vdom.Effect.Many
-                       [ set_last_sent (Some sexp_str)
+                       [ set_applying_remote true
+                       ; set_last_sent (Some sexp_str)
+                       ; set_seen_remote true
                        ; set_st st_remote
                        ; set_selected None
                        ]
                    in
-                   (* fabricate a dummy DOM event for Expert.handle *)
                    let dummy_ev : #Dom_html.event Js.t =
                      Obj.magic (Js.Unsafe.obj [||])
                    in
@@ -929,32 +1071,90 @@ let app_component =
                  with
                  | _ -> ())
              ~request_send:(fun () ->
+                 (* On match, only let WHITE seed initial state, and only if roomHasState=false.
+                    Otherwise, do NOT push (prevents overwrite on reload). *)
                  let s = !(Js_bridge.latest_state_sexp) in
-                 if not (String.is_empty (String.strip s)) then
-                   Js_bridge.send_state s)
+                 let role_opt = Js_bridge.get_firebase_role () in
+                 let role_player : Player_kind.t option =
+                   match role_opt with
+                   | Some r when String.Caseless.equal (String.strip r) "white" -> Some Player_kind.White
+                   | Some r when String.Caseless.equal (String.strip r) "black" -> Some Player_kind.Black
+                   | _ -> None
+                 in
+                 let room_has_state =
+                   match Js_bridge.get_firebase_room_has_state () with
+                   | None -> true
+                   | Some b -> b
+                 in
+                 if String.is_empty (String.strip s) then ()
+                 else
+                   match role_player with
+                   | Some Player_kind.White when not room_has_state -> Js_bridge.send_state s
+                   | _ -> ())
          in
          (Vdom.Effect.of_sync_fun sync_fn) ())
       ()
   in
 
-  (* Whenever local state changes, push it to Firestore (if sendState is ready). *)
+  (* (C) Whenever local state changes, push it to Firestore if allowed (see should_send). *)
   let%sub () =
     Bonsai.Edge.on_change
-      (module String)
-      (let%map st = st in
-       let s = Sexplib.Sexp.to_string (Game_state.sexp_of_t st) in
-       Js_bridge.latest_state_sexp := s;
-       s)
+      (module Push_payload)
+      (let%map st = st
+       and env_role = env_role
+       and env_status = env_status
+       and env_uid = env_uid
+       and env_room_has_state = env_room_has_state
+       and seen_remote = seen_remote
+       and applying_remote = applying_remote
+       in
+       let sexp_str = Sexplib.Sexp.to_string (Game_state.sexp_of_t st) in
+       Js_bridge.set_latest_state sexp_str;
+
+       let role_player : Player_kind.t option =
+         match env_role with
+         | Some r when String.Caseless.equal (String.strip r) "white" -> Some Player_kind.White
+         | Some r when String.Caseless.equal (String.strip r) "black" -> Some Player_kind.Black
+         | _ -> None
+       in
+       let matched =
+         match env_status with
+         | Some s -> String.Caseless.equal (String.strip s) "matched"
+         | None -> false
+       in
+
+       let room_has_state =
+         match env_room_has_state with
+         | None -> true
+         | Some b -> b
+       in
+
+       let should_send =
+         Option.is_some env_uid
+         && matched
+         && Option.is_some role_player
+         && (seen_remote || not room_has_state)
+         && not applying_remote
+       in
+       { Push_payload.sexp = sexp_str; should_send })
       ~callback:
         (let%map last_sent = last_sent
-         and set_last_sent = set_last_sent in
-         fun sexp_str ->
-           match last_sent with
-           | Some s when String.equal s sexp_str ->
-             Vdom.Effect.Ignore
-           | _ ->
-             Js_bridge.send_state sexp_str;
-             set_last_sent (Some sexp_str))
+         and set_last_sent = set_last_sent
+         and applying_remote = applying_remote
+         and set_applying_remote = set_applying_remote
+         in
+         fun ({ Push_payload.sexp; should_send } : Push_payload.t) ->
+           if applying_remote then
+             (* clear flag, do NOT echo-send *)
+             set_applying_remote false
+           else if not should_send then Vdom.Effect.Ignore
+           else
+             match last_sent with
+             | Some s when String.equal s sexp ->
+               Vdom.Effect.Ignore
+             | _ ->
+               Js_bridge.send_state sexp;
+               set_last_sent (Some sexp))
   in
 
   let%arr st = st
@@ -964,21 +1164,30 @@ let app_component =
   and debug_open = debug_open
   and set_debug_open = set_debug_open
   and debug_dice = debug_dice
-  and set_debug_dice = set_debug_dice in
+  and set_debug_dice = set_debug_dice
+  and set_last_sent = set_last_sent
+  and env_uid = env_uid
+  and env_room = env_room
+  and env_status = env_status
+  and env_role = env_role in
 
   let p_opt, dice_left = whose_turn_and_dice st in
   let ph = phase_of ~st ~selected in
 
-  (* turn-gate (who am I?) — single source of truth *)
   let my_role_opt : Player_kind.t option =
-    match Js_bridge.get_firebase_role () with
+    match env_role with
     | Some r ->
-      (match String.lowercase (String.strip r) with
-       | "white" -> Some Player_kind.White
-       | "black" -> Some Player_kind.Black
-       | _ -> None)
+      let r = String.strip r in
+      if String.Caseless.equal r "white" then Some Player_kind.White
+      else if String.Caseless.equal r "black" then Some Player_kind.Black
+      else None
     | None -> None
   in
+
+  let uid_opt = env_uid in
+  let room_opt = env_room in
+  let is_signed_in = Option.is_some uid_opt in
+  let is_matched = Option.is_some my_role_opt in
 
   let can_interact =
     match my_role_opt, p_opt with
@@ -1003,14 +1212,25 @@ let app_component =
 
   let has_any_move = not (List.is_empty valid_srcs) in
 
+  (* NEW GAME: only current-turn player can click (handled in button disable). *)
   let do_new_game =
-    match Game_state.create () with
-    | Error _ -> Vdom.Effect.Ignore
-    | Ok st0 ->
-      let st1 =
-        { st0 with decision = Decision.In_progress { whose_turn = Player_kind.White; dice_left = [] } }
-      in
-      Vdom.Effect.Many [ set_st st1; set_selected None ]
+    if not can_interact then Vdom.Effect.Ignore
+    else
+      match Game_state.create () with
+      | Error _ -> Vdom.Effect.Ignore
+      | Ok st0 ->
+        let st1 =
+          { st0 with decision = Decision.In_progress { whose_turn = Player_kind.White; dice_left = [] } }
+        in
+        let sexp = Sexplib.Sexp.to_string (Game_state.sexp_of_t st1) in
+        Js_bridge.set_latest_state sexp;
+        (* Send immediately; on_change will ignore duplicate because last_sent set. *)
+        Js_bridge.send_state sexp;
+        Vdom.Effect.Many
+          [ set_last_sent (Some sexp)
+          ; set_st st1
+          ; set_selected None
+          ]
   in
 
   let do_roll =
@@ -1047,7 +1267,6 @@ let app_component =
           Vdom.Effect.Many [ set_st st'; set_selected None ]
   in
 
-  (* Debug: force dice to a stable value for tests *)
   let do_apply_debug_dice =
     if not can_interact then Vdom.Effect.Ignore
     else
@@ -1078,9 +1297,6 @@ let app_component =
       | _ -> Vdom.Effect.Ignore
   in
 
-  (* ========================================================================= *)
-  (* Apply a move: update local state (on_change will push to Firebase)          *)
-  (* ========================================================================= *)
   let apply_move ~(source : Location.t) ~(dest : Location.t) =
     match p_opt with
     | None -> Vdom.Effect.Ignore
@@ -1140,19 +1356,32 @@ let app_component =
       [ Vdom.Node.text "Backgammon" ]
   in
 
+  let short_id (s : string) : string =
+    let s = String.strip s in
+    if String.length s <= 10 then s else String.prefix s 6 ^ "…" ^ String.suffix s 2
+  in
+  let pretty_role = function
+    | None -> "—"
+    | Some Player_kind.White -> "White"
+    | Some Player_kind.Black -> "Black"
+  in
+  let pretty_turn = function
+    | None -> "—"
+    | Some Player_kind.White -> "White"
+    | Some Player_kind.Black -> "Black"
+  in
+
+  let match_txt =
+    match env_status with
+    | Some s when String.Caseless.equal (String.strip s) "matched" -> "Matched ✅"
+    | Some s when not (String.is_empty (String.strip s)) -> String.capitalize (String.strip s)
+    | _ -> if is_matched then "Matched ✅" else "Not matched"
+  in
+  let uid_txt = Option.value_map uid_opt ~default:"—" ~f:short_id in
+  let room_txt = Option.value_map room_opt ~default:"—" ~f:short_id in
+
   let status_bar =
     let text = status_text ~st ~selected in
-    let turn_txt =
-      match p_opt with
-      | None -> "none"
-      | Some p -> player_to_string p
-    in
-    let me_txt =
-      match my_role_opt with
-      | None -> "unknown"
-      | Some Player_kind.White -> "white"
-      | Some Player_kind.Black -> "black"
-    in
     Vdom.Node.div
       ~attrs:
         [ testid "status"
@@ -1162,12 +1391,21 @@ let app_component =
         ; attr "data-testid" "status-bar"
         ]
       [ Vdom.Node.div
-          ~attrs:[ attr "style" "font-weight:700;font-size:14px;"; attr "data-testid" "status-text" ]
+          ~attrs:[ attr "style" "font-weight:800;font-size:14px;"; attr "data-testid" "status-text" ]
           [ Vdom.Node.text text ]
       ; Vdom.Node.div
-          ~attrs:[ attr "style" "font-size:12px;color:#ccc;"; attr "data-testid" "status-meta" ]
-          [ Vdom.Node.text
-              (sprintf "me=%s | turn=%s | Off: B %d / W %d" me_txt turn_txt st.off_black st.off_white)
+          ~attrs:[ attr "style" "font-size:12px;color:#ddd;line-height:1.4;text-align:right;"; attr "data-testid" "status-meta" ]
+          [ Vdom.Node.div
+              ~attrs:[ attr "data-testid" "online-line-1" ]
+              [ Vdom.Node.text
+                  (sprintf "Online: %s  ·  You: %s  ·  Turn: %s"
+                     match_txt
+                     (pretty_role my_role_opt)
+                     (pretty_turn p_opt))
+              ]
+          ; Vdom.Node.div
+              ~attrs:[ attr "data-testid" "online-line-2"; attr "style" "color:#bbb;" ]
+              [ Vdom.Node.text (sprintf "UID: %s  ·  Room: %s" uid_txt room_txt) ]
           ]
       ]
   in
@@ -1205,6 +1443,8 @@ let app_component =
         | Select_destination -> false
         | _ -> true
     in
+    (* NEW: only current-turn player can click New Game *)
+    let new_game_disabled = not can_interact in
     let hint_txt =
       if not can_interact then "Waiting for opponent…"
       else
@@ -1217,7 +1457,7 @@ let app_component =
     Vdom.Node.div
       ~attrs:[ Vdom.Attr.class_ "topbar"; attr "data-testid" "controls" ]
       ([
-         small_btn ~testid:"btn-new" ~label:"New Game" ~disabled:false ~on_click:do_new_game
+         small_btn ~testid:"btn-new" ~label:"New Game" ~disabled:new_game_disabled ~on_click:do_new_game
        ; small_btn ~testid:"btn-roll" ~label:"Roll" ~disabled:roll_disabled ~on_click:do_roll
        ; small_btn ~testid:"btn-end" ~label:"End Turn" ~disabled:end_turn_disabled ~on_click:do_end_turn
        ; small_btn ~testid:"btn-cancel" ~label:"Cancel" ~disabled:cancel_disabled ~on_click:do_cancel
@@ -1285,15 +1525,80 @@ let app_component =
 
   let dice_row = if List.is_empty dice_left then Vdom.Node.none else dice_view dice_left in
 
-  Vdom.Node.div
-    ~attrs:[ Vdom.Attr.class_ "page"; attr "data-testid" "page" ]
-    [ title
-    ; status_bar
-    ; game_area
-    ; dice_row
-    ; debug_panel
-    ; buttons
-    ]
+  let status_is_waiting =
+    match env_status with
+    | Some s -> String.Caseless.equal (String.strip s) "waiting"
+    | None -> false
+  in
+
+  let lobby_card =
+    let btn ~id ~label ~disabled ~on_click =
+      let base_style =
+        "width:280px;padding:14px 16px;border-radius:14px;border:1px solid #333;\
+         background:#111;color:#fff;font-weight:800;font-size:16px;cursor:pointer;\
+         box-shadow:0 8px 18px rgba(0,0,0,0.25);"
+      in
+      let disabled_style =
+        "width:280px;padding:14px 16px;border-radius:14px;border:1px solid #333;\
+         background:#111;color:#fff;font-weight:800;font-size:16px;opacity:0.45;cursor:not-allowed;\
+         box-shadow:0 8px 18px rgba(0,0,0,0.25);"
+      in
+      Vdom.Node.button
+        ~attrs:
+          ([ attr "data-testid" id
+           ; attr "style" (if disabled then disabled_style else base_style)
+           ]
+           @ (if disabled
+              then [ attr "disabled" "true" ]
+              else [ Vdom.Attr.on_click (fun _ -> on_click) ]))
+        [ Vdom.Node.text label ]
+    in
+    Vdom.Node.div
+      ~attrs:
+        [ attr "data-testid" "lobby"
+        ; attr "style"
+            "min-height:70vh;display:flex;flex-direction:column;align-items:center;\
+             justify-content:center;gap:14px;"
+        ]
+      [ Vdom.Node.div
+          ~attrs:[ attr "style" "font-size:44px;font-weight:900;margin-bottom:8px;" ]
+          [ Vdom.Node.text "Backgammon" ]
+      ; Vdom.Node.div
+          ~attrs:[ attr "style" "color:#666;font-size:14px;margin-bottom:14px;text-align:center;" ]
+          [ Vdom.Node.text (sprintf "Signed in: %s   ·   Room: %s   ·   Status: %s"
+                               (if is_signed_in then uid_txt else "No")
+                               room_txt
+                               match_txt)
+          ]
+      ; btn
+          ~id:"btn-signin"
+          ~label:"Sign in (Guest)"
+          ~disabled:is_signed_in
+          ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "signIn") ())
+      ; btn
+          ~id:"btn-quickmatch"
+          ~label:(if status_is_waiting then "Searching…" else "Quickmatch")
+          ~disabled:((not is_signed_in) || status_is_waiting)
+          ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "quickmatch") ())
+      ; Vdom.Node.div
+          ~attrs:[ attr "style" "margin-top:10px;color:#888;font-size:13px;text-align:center;max-width:520px;" ]
+          [ Vdom.Node.text "Tip: open this page on two browsers, click Sign in, then Quickmatch on both." ]
+      ]
+  in
+
+  let game_page =
+    Vdom.Node.div
+      ~attrs:[ Vdom.Attr.class_ "page"; attr "data-testid" "page" ]
+      [ title
+      ; status_bar
+      ; game_area
+      ; dice_row
+      ; debug_panel
+      ; buttons
+      ]
+  in
+
+  if is_matched then game_page else lobby_card
 ;;
 
 let () =
