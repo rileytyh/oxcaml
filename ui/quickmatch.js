@@ -653,6 +653,11 @@ async function attachRoomSync(roomId) {
 (async function bootstrap() {
   const env = await waitFirebaseBindings();
 
+  // ---- HW12: persist acquisition on env ----
+  try {
+    env.acq = window.__acq || env.acq || null;
+  } catch {}
+
   // existing API
   env.quickmatch = quickmatch;
   env.createGame = createGame;
@@ -667,7 +672,9 @@ async function attachRoomSync(roomId) {
   env.listenInviteStatus = listenInviteStatus;
 
   // analytics API for OCaml UI
-  env.logEvent = (name) => logEventName(env, name);
+  if (typeof env.logEvent !== "function") {
+    env.logEvent = (name) => logEventName(env, name);
+  }
 
   // notifications API for OCaml UI
   if (typeof Notification !== "undefined") {
@@ -703,7 +710,8 @@ async function attachRoomSync(roomId) {
   // Kick off invite inbox listener automatically once signed in
   try {
     await waitSignedIn();
-    logEventName(env, "sign_in"); // if sign-in already happened by the time quickmatch loads
+    logEventName(env, "guest_signed_in");
+    logEventName(env, "landing_ready", { has_acq: window.__acq ? "1" : "0" });
     await listenIncomingInvites();
   } catch (e) {
     console.warn("[quickmatch] invite listener not started:", e?.message || e);

@@ -147,6 +147,11 @@
   window.firebaseEnv = env;
   emitChanged();
 
+  // stash acquisition params on env so analytics.js can read env.acq
+  try {
+    window.firebaseEnv.acq = window.__acq || window._acq || null;
+  } catch {}
+
   // Keep env in sync on refresh/reload if already signed in
   try {
     if (typeof b.onAuthStateChanged === "function") {

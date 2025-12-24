@@ -104,6 +104,42 @@
         }
       };
 
+      // ---- HW12: acquisition params from URL (utm_* / gclid / fbclid) ----
+      try {
+        const u = new URL(window.location.href);
+        const qp = u.searchParams;
+
+        const utm_source = qp.get("utm_source");
+        const utm_medium = qp.get("utm_medium");
+        const utm_campaign = qp.get("utm_campaign");
+        const utm_content = qp.get("utm_content");
+        const utm_term = qp.get("utm_term");
+
+        const gclid = qp.get("gclid");
+        const fbclid = qp.get("fbclid");
+
+        let source = "unknown";
+        if (utm_source) source = utm_source;
+        else if (gclid) source = "google";
+        else if (fbclid) source = "facebook";
+
+        // expose to other scripts
+        window.__acq = {
+          source,
+          utm_source,
+          utm_medium,
+          utm_campaign,
+          utm_content,
+          utm_term,
+          gclid: gclid ? "1" : "",
+          fbclid: fbclid ? "1" : "",
+          path: window.location.pathname || "",
+        };
+
+        // Optional: remove click ids (avoid repeated reprocessing)
+        // if (gclid || fbclid || utm_source) history.replaceState({}, "", u.pathname + u.hash);
+      } catch {}
+
       console.log("[firebase:init] bindings ready (analytics:", !!analytics, ")");
     </script>
 
