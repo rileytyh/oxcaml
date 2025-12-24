@@ -1,9 +1,12 @@
 // ui/quickmatch.js
-// Matchmaking + room sync + Invite flow (Firestore <-> OCaml bridge)
+// Matchmaking + room sync + Invite flow + Analytics + light notifications
 //
 // IMPORTANT: This file does NOT hide #app.
-// Your OCaml app renders both lobby + game inside #app,
-// so we never toggle #app visibility here.
+// Your OCaml app renders both lobby + game inside #app.
+
+// keep a set for notified invite ids
+window.firebaseEnv = window.firebaseEnv || {};
+window.firebaseEnv._notifiedInviteIds = window.firebaseEnv._notifiedInviteIds || new Set();
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -48,12 +51,83 @@ function normalizeRole(x) {
   return null;
 }
 
+function shortId(x, n = 6) {
+  if (!x) return "—";
+  const s = String(x);
+  if (s.length <= n) return s;
+  return s.slice(0, n) + "…" + s.slice(-2);
+}
+
+// ---------- Analytics wrapper ----------
+function logEventName(env, name, params = undefined) {
+  try {
+    if (typeof env._analyticsLog === "function") env._analyticsLog(name, params || {});
+  } catch {}
+}
+
+// ---------- Light notification wrapper ----------
+async function requestNotificationPermission(env) {
+  // Ensure notify() exists
+  if (typeof env.notify !== "function") {
+    env.notify = (title, opts = {}) => {
+      try {
+        if (typeof Notification === "undefined") return false;
+        if (!env.notificationsEnabled) return false;
+        if (Notification.permission !== "granted") return false;
+        new Notification(title, opts || {});
+        return true;
+      } catch {
+        return false;
+      }
+    };
+  }
+
+  if (typeof window === "undefined" || typeof Notification === "undefined") {
+    env.notificationPermission = "unsupported";
+    env.notificationsEnabled = false;
+    emitChanged(env);
+    return false;
+  }
+
+  try {
+    // if already granted/denied, requestPermission may not pop; that's fine
+    let p = Notification.permission;
+    if (p !== "granted") {
+      p = await Notification.requestPermission();
+    }
+    env.notificationPermission = p;
+    env.notificationsEnabled = p === "granted";
+    emitChanged(env);
+    return env.notificationsEnabled;
+  } catch (e) {
+    env.notificationPermission = "error";
+    env.notificationsEnabled = false;
+    emitChanged(env);
+    return false;
+  }
+}
+
+function maybeNotifyInvite(env, inv) {
+  try {
+    if (typeof window === "undefined" || typeof Notification === "undefined") return;
+    if (document && document.hidden !== true) return;
+    if (Notification.permission !== "granted") return;
+    if (!env.notificationsEnabled) return;
+
+    const from = inv?.fromUid ? shortId(inv.fromUid) : "someone";
+    new Notification("Backgammon invite", {
+      body: `Invite from ${from}. Open tab to accept.`,
+      tag: "bg-invite",
+    });
+  } catch {}
+}
+
 /**
  * Matchmaking model:
  * - queue/{doc}: { uid, status: waiting|matched|cancelled, matchedRoomId? }
  * - rooms/{room}: { players:{p1,p2}, by, stateSexp, updatedAt, createdAt }
  *
- * Invite model (MVP):
+ * Invite model:
  * - invites/{inviteId}: {
  *     fromUid, toUid, roomId,
  *     status: "pending" | "accepted" | "declined",
@@ -61,14 +135,8 @@ function normalizeRole(x) {
  *   }
  */
 
-// -------------------- INVITES: helpers --------------------
+// -------------------- INVITES --------------------
 
-/**
- * (Sender) Create invite:
- * - create a dedicated room (sender is White, status=waiting, attachRoomSync)
- * - create invites doc (pending)
- * - IMPORTANT: start listening the invite doc; once accepted, sender flips to matched and enters game
- */
 async function createInvite(toUid) {
   const env = await waitSignedIn();
   const { db, uid, collection, addDoc, serverTimestamp } = env;
@@ -91,24 +159,18 @@ async function createInvite(toUid) {
 
   env.lastInviteId = inviteRef.id;
   env.lastInvitedTo = toUid;
-  env.lastInviteStatus = "pending";
-  emitChanged(env);
 
-  // KEY FIX: sender listens invite status and auto-enters when accepted
+  // Start listening so inviter auto-enters game when accepted
   try {
     await listenInviteStatus(inviteRef.id);
-  } catch (e) {
-    console.warn("[invite] listenInviteStatus failed:", e?.message || e);
-  }
+  } catch {}
+
+  logEventName(env, "invite_sent", { to_uid: toUid });
+  emitChanged(env);
 
   return { inviteId: inviteRef.id, roomId };
 }
 
-/**
- * (Receiver) Accept invite:
- * - mark invite accepted
- * - join room as Black (joinGame sets matched + attachRoomSync)
- */
 async function acceptInvite(inviteId) {
   const env = await waitSignedIn();
   const { db, uid, doc, getDoc, updateDoc, serverTimestamp } = env;
@@ -123,7 +185,6 @@ async function acceptInvite(inviteId) {
   if (inv.toUid !== uid) throw new Error("Not your invite");
   if (!truthyStr(inv.roomId)) throw new Error("Invite missing roomId");
 
-  // Mark accepted
   await updateDoc(invRef, {
     status: "accepted",
     respondedAt: serverTimestamp(),
@@ -133,8 +194,11 @@ async function acceptInvite(inviteId) {
   await joinGame(inv.roomId);
 
   env.lastAcceptedInviteId = inviteId;
-  emitChanged(env);
 
+  logEventName(env, "invite_accepted", { room_id: inv.roomId });
+  logEventName(env, "game_start", { via: "invite_accept" });
+
+  emitChanged(env);
   return { ok: true, roomId: inv.roomId };
 }
 
@@ -158,13 +222,13 @@ async function declineInvite(inviteId) {
 
   env.lastDeclinedInviteId = inviteId;
   emitChanged(env);
-
   return { ok: true };
 }
 
 /**
  * Listen incoming invites for current user (pending only).
  * Updates env.incomingInvites = [{id, ...data}]
+ * Also triggers Notification when new invite arrives and tab is hidden.
  */
 async function listenIncomingInvites() {
   const env = await waitSignedIn();
@@ -183,6 +247,8 @@ async function listenIncomingInvites() {
   );
 
   env.incomingInvites = env.incomingInvites || [];
+  env._knownInviteIds = env._knownInviteIds || {};
+  env._notifiedInviteIds = env._notifiedInviteIds || new Set();
   emitChanged(env);
 
   env._unsubInvites = onSnapshot(q, (snap) => {
@@ -191,27 +257,57 @@ async function listenIncomingInvites() {
       const data = d.data() || {};
       arr.push({ id: d.id, ...data });
     }
-    // newest first if createdAt available; otherwise keep as-is
     arr.sort((a, b) => {
       const ta = a.createdAt?.seconds || 0;
       const tb = b.createdAt?.seconds || 0;
       return tb - ta;
     });
+
+    // detect new invites
+    const prev = env._knownInviteIds || {};
+    const next = {};
+    let firstNew = null;
+    for (const inv of arr) {
+      next[inv.id] = true;
+      if (!prev[inv.id] && !firstNew) firstNew = inv;
+    }
+    env._knownInviteIds = next;
+
     env.incomingInvites = arr;
     emitChanged(env);
+
+    // Check for new invites and send notifications
+    for (const inv of env.incomingInvites || []) {
+      if (!inv || !inv.id) continue;
+      if (env._notifiedInviteIds.has(inv.id)) continue;
+
+      // mark as seen
+      env._notifiedInviteIds.add(inv.id);
+
+      // only notify when tab is hidden + permission granted
+      if (document.hidden && env.notificationsEnabled && Notification.permission === "granted") {
+        env.notify("Backgammon invite", {
+          body: `From ${inv.fromUid ? inv.fromUid.slice(0,6) + "…" : "someone"}`,
+        });
+        env.logEventWith?.("invite_notification", { invite_id: inv.id });
+      }
+    }
+
+    if (firstNew) {
+      maybeNotifyInvite(env, firstNew);
+    }
   });
 
   return true;
 }
 
 /**
- * (Sender) Listen outgoing invite status:
- * - if accepted: sender flips status->matched and stays/enters the same room as White
- * - if declined: sender can go back to signed_in (optional)
+ * Listen outgoing invite status so inviter can detect accept/decline
+ * and automatically enter game on accept.
  */
 async function listenInviteStatus(inviteId) {
   const env = await waitSignedIn();
-  const { db, uid, doc, onSnapshot, getDoc } = env;
+  const { db, uid, doc, onSnapshot } = env;
   if (!truthyStr(inviteId)) throw new Error("inviteId required");
 
   if (env._unsubInviteStatus && typeof env._unsubInviteStatus === "function") {
@@ -219,67 +315,31 @@ async function listenInviteStatus(inviteId) {
   }
 
   const invRef = doc(db, "invites", inviteId);
-
-  env._unsubInviteStatus = onSnapshot(invRef, async (snap) => {
+  env._unsubInviteStatus = onSnapshot(invRef, (snap) => {
     if (!snap.exists()) return;
     const inv = snap.data() || {};
     if (inv.fromUid !== uid) return;
 
-    const status = inv.status || null;
-    env.lastInviteStatus = status;
+    const st = inv.status || null;
+    env.lastInviteStatus = st;
     emitChanged(env);
 
-    // accepted => sender should enter game
-    if (status === "accepted") {
-      const roomId = inv.roomId;
-      if (truthyStr(roomId)) {
-        // sender is White in this invite-room
-        env.roomId = roomId;
-        env.role = "white";
-        env.status = "matched";
-        emitChanged(env);
-
-        // ensure room sync is attached (createGame already does, but safe)
-        try {
-          // if you already attached, this will just reattach safely
-          await attachRoomSync(roomId);
-        } catch (e) {
-          console.warn("[invite] attachRoomSync failed:", e?.message || e);
-        }
-      }
-    }
-
-    // declined => optional: reset sender lobby status
-    if (status === "declined") {
-      // keep roomId/role as-is if you want, but usually go back to signed_in
-      env.status = "signed_in";
+    if (st === "accepted") {
+      // inviter is host (white) already in roomId from createGame()
+      // Switch UI into game page
+      env.status = "matched";
+      env.role = normalizeRole(env.role) || env.role;
       emitChanged(env);
+
+      logEventName(env, "matched", { via: "invite_accepted" });
+      logEventName(env, "game_start", { via: "invite_host" });
     }
   });
-
-  // also do one immediate read (helps if status already changed before listener attaches)
-  try {
-    const s0 = await getDoc(invRef);
-    if (s0.exists()) {
-      const inv0 = s0.data() || {};
-      if (inv0.fromUid === uid) {
-        env.lastInviteStatus = inv0.status || null;
-        emitChanged(env);
-        if (inv0.status === "accepted" && truthyStr(inv0.roomId)) {
-          env.roomId = inv0.roomId;
-          env.role = "white";
-          env.status = "matched";
-          emitChanged(env);
-          await attachRoomSync(inv0.roomId);
-        }
-      }
-    }
-  } catch {}
 
   return true;
 }
 
-// -------------------- EXISTING: quickmatch / rooms --------------------
+// -------------------- QUICKMATCH / ROOMS --------------------
 
 async function quickmatch() {
   const env = await waitSignedIn();
@@ -297,6 +357,8 @@ async function quickmatch() {
     where,
     limit,
   } = env;
+
+  logEventName(env, "quickmatch_start");
 
   env.status = "waiting";
   emitChanged(env);
@@ -338,6 +400,9 @@ async function quickmatch() {
     env.status = "matched";
     emitChanged(env);
 
+    logEventName(env, "matched", { via: "quickmatch" });
+    logEventName(env, "game_start", { via: "quickmatch" });
+
     await attachRoomSync(roomRef.id);
     return { roomId: roomRef.id, role: "black" };
   }
@@ -359,6 +424,9 @@ async function quickmatch() {
       env.role = "white";
       env.status = "matched";
       emitChanged(env);
+
+      logEventName(env, "matched", { via: "quickmatch" });
+      logEventName(env, "game_start", { via: "quickmatch" });
 
       await attachRoomSync(mine.matchedRoomId);
       return { roomId: mine.matchedRoomId, role: "white" };
@@ -418,6 +486,7 @@ async function joinGame(roomId) {
     env.role = "white";
     env.status = "matched";
     emitChanged(env);
+    logEventName(env, "game_start", { via: "rejoin" });
     await attachRoomSync(roomId);
     return { roomId, role: "white", rejoin: true };
   }
@@ -427,6 +496,7 @@ async function joinGame(roomId) {
     env.role = "black";
     env.status = "matched";
     emitChanged(env);
+    logEventName(env, "game_start", { via: "rejoin" });
     await attachRoomSync(roomId);
     return { roomId, role: "black", rejoin: true };
   }
@@ -438,6 +508,7 @@ async function joinGame(roomId) {
     env.role = "white";
     env.status = "matched";
     emitChanged(env);
+    logEventName(env, "game_start", { via: "join_room" });
     await attachRoomSync(roomId);
     return { roomId, role: "white" };
   }
@@ -453,6 +524,8 @@ async function joinGame(roomId) {
   env.role = "black";
   env.status = "matched";
   emitChanged(env);
+
+  logEventName(env, "game_start", { via: "join_room" });
 
   await attachRoomSync(roomId);
   return { roomId, role: "black" };
@@ -580,23 +653,57 @@ async function attachRoomSync(roomId) {
 (async function bootstrap() {
   const env = await waitFirebaseBindings();
 
+  // existing API
   env.quickmatch = quickmatch;
   env.createGame = createGame;
   env.joinGame = joinGame;
   env.attachRoomSync = attachRoomSync;
 
   // Invite API
-  env.createInvite = createInvite;         // createInvite(toUid) -> {inviteId, roomId}
-  env.acceptInvite = acceptInvite;         // acceptInvite(inviteId) -> joins room
-  env.declineInvite = declineInvite;       // declineInvite(inviteId)
-  env.listenIncomingInvites = listenIncomingInvites; // start listener
-  env.listenInviteStatus = listenInviteStatus;       // sender listens accept/decline
+  env.createInvite = createInvite;
+  env.acceptInvite = acceptInvite;
+  env.declineInvite = declineInvite;
+  env.listenIncomingInvites = listenIncomingInvites;
+  env.listenInviteStatus = listenInviteStatus;
+
+  // analytics API for OCaml UI
+  env.logEvent = (name) => logEventName(env, name);
+
+  // notifications API for OCaml UI
+  if (typeof Notification !== "undefined") {
+    env.notificationPermission = Notification.permission;
+
+    // If user already allowed notifications previously, auto-enable.
+    if (typeof env.notificationsEnabled !== "boolean") {
+      env.notificationsEnabled = Notification.permission === "granted";
+    }
+
+    // Provide env.notify() for both OCaml UI + quickmatch.js
+    if (typeof env.notify !== "function") {
+      env.notify = (title, opts = {}) => {
+        try {
+          if (!env.notificationsEnabled) return false;
+          if (Notification.permission !== "granted") return false;
+          new Notification(title, opts || {});
+          return true;
+        } catch {
+          return false;
+        }
+      };
+    }
+  } else {
+    env.notificationPermission = "unsupported";
+    env.notificationsEnabled = false;
+  }
+
+  env.requestNotificationPermission = () => requestNotificationPermission(env);
 
   if (typeof env.roomHasState === "undefined") env.roomHasState = true;
 
   // Kick off invite inbox listener automatically once signed in
   try {
     await waitSignedIn();
+    logEventName(env, "sign_in"); // if sign-in already happened by the time quickmatch loads
     await listenIncomingInvites();
   } catch (e) {
     console.warn("[quickmatch] invite listener not started:", e?.message || e);

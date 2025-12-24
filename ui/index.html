@@ -15,10 +15,14 @@
       }
     </style>
 
-    <!-- 1) Firebase init + expose bindings (NO sign-in here) -->
+    <!-- 1) Firebase init + expose bindings (NO auto sign-in here) -->
     <script type="module">
       import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-      import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+      import {
+        getAuth,
+        signInAnonymously,
+        onAuthStateChanged
+      } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
       import {
         getFirestore,
         collection,
@@ -35,6 +39,12 @@
         limit
       } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
+      // Analytics
+      import {
+        getAnalytics,
+        logEvent
+      } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js";
+
       const firebaseConfig = {
         apiKey: "AIzaSyCn7ZyEKhQy30ifch4oql8E3uL81O1_Yz0",
         authDomain: "backgammon-game1.firebaseapp.com",
@@ -42,12 +52,25 @@
         storageBucket: "backgammon-game1.firebasestorage.app",
         messagingSenderId: "607056940980",
         appId: "1:607056940980:web:4eda69927ea168b0faace1"
+
+        // ✅ 如果你 Firebase Console 给了 measurementId，建议加上这一行（有就加，没有也能跑）：
+        // measurementId: "G-XXXXXXXXXX"
       };
 
+      // Init core
       const app = initializeApp(firebaseConfig);
       const auth = getAuth(app);
       const db = getFirestore(app);
 
+      // Init analytics (可能在某些环境不可用；不可用就优雅降级)
+      let analytics = null;
+      try {
+        analytics = getAnalytics(app);
+      } catch (e) {
+        console.warn("[firebase] analytics unavailable:", e?.message || e);
+      }
+
+      // Expose bindings for firebase_debug.js / quickmatch.js / analytics.js
       window.__firebaseBindings = {
         app,
         auth,
@@ -69,19 +92,28 @@
         serverTimestamp,
         query,
         where,
-        limit
+        limit,
+
+        // analytics
+        analytics,
+        analyticsLogEvent: (name, params = {}) => {
+          if (!analytics) return;
+          try {
+            logEvent(analytics, name, params || {});
+          } catch {}
+        }
       };
 
-      console.log("[firebase:init] bindings ready");
+      console.log("[firebase:init] bindings ready (analytics:", !!analytics, ")");
     </script>
 
     <!-- 2) firebaseEnv shim (NO auto sign-in) -->
     <script defer src="firebase_debug.js"></script>
 
-    <!-- 2.5) analytics (optional) -->
+    <!-- 2.5) analytics bridge (sets firebaseEnv._analyticsLog / logEventWith) -->
     <script defer src="analytics.js"></script>
 
-    <!-- 3) quickmatch + room sync -->
+    <!-- 3) quickmatch + room sync + invites -->
     <script defer src="quickmatch.js"></script>
 
     <!-- 4) js_of_ocaml output -->
@@ -89,7 +121,7 @@
   </head>
 
   <body>
-    <!-- (optional) keep hidden -->
+    <!-- optional unused root -->
     <div id="lobby-root" style="display: none"></div>
 
     <!-- OCaml app mounts here -->

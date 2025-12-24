@@ -176,6 +176,19 @@ module Js_bridge = struct
     with
     | _ -> ()
 
+  (* Open URL in new tab *)
+  let open_url (url : string) : unit =
+    try
+      ignore
+        (Js.Unsafe.meth_call
+           Dom_html.window
+           "open"
+           [| Js.Unsafe.inject (Js.string url)
+            ; Js.Unsafe.inject (Js.string "_blank")
+           |])
+    with
+    | _ -> ()
+
   (* Read firebaseEnv.incomingInvites (array of objects with fields: id, fromUid, roomId) *)
   type invite =
     { id : string
@@ -290,6 +303,10 @@ end
 
 module Opt_bool = struct
   type t = bool option [@@deriving sexp, compare, equal]
+end
+
+module Bool = struct
+  type t = bool [@@deriving sexp, compare, equal]
 end
 
 module Seen_remote = struct
@@ -1081,6 +1098,9 @@ let app_component =
   in
 
   let%sub st, set_st = Bonsai.state ~default_model:initial_state (module Game_state) in
+  let%sub game_end_logged, set_game_end_logged =
+    Bonsai.state ~default_model:false (module Bool)
+  in
   let%sub selected, set_selected = Bonsai.state ~default_model:None (module Selected_source) in
   let%sub debug_open, set_debug_open = Bonsai.state ~default_model:false (module Debug_open) in
   let%sub advanced_open, set_advanced_open =
@@ -1289,6 +1309,24 @@ let app_component =
                set_last_sent (Some sexp))
   in
 
+  (* Log game_end event when game first becomes Winner *)
+  let%sub () =
+    Bonsai.Edge.on_change
+      (module Game_state)
+      (let%map st = st in st)
+      ~callback:
+        (let%map game_end_logged = game_end_logged
+         and set_game_end_logged = set_game_end_logged in
+         fun (st_now : Game_state.t) ->
+           match st_now.decision with
+           | Decision.Winner _ when not game_end_logged ->
+             Vdom.Effect.Many
+               [ Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "logEvent" "game_end") ()
+               ; set_game_end_logged true
+               ]
+           | _ -> Vdom.Effect.Ignore)
+  in
+
   let%arr st = st
   and set_st = set_st
   and selected = selected
@@ -1310,6 +1348,7 @@ let app_component =
   and set_join_room_text = set_join_room_text
   and toast = toast
   and set_toast = set_toast
+  and set_game_end_logged = set_game_end_logged
   in
 
   let p_opt, dice_left = whose_turn_and_dice st in
@@ -1373,6 +1412,7 @@ let app_component =
           [ set_last_sent (Some sexp)
           ; set_st st1
           ; set_selected None
+          ; set_game_end_logged false
           ]
   in
 
@@ -1453,7 +1493,11 @@ let app_component =
          | Ok st' ->
            let sexp = Sexplib.Sexp.to_string (Game_state.sexp_of_t st') in
            Js_bridge.set_latest_state sexp;
-           Vdom.Effect.Many [ set_st st'; set_selected None ])
+           Vdom.Effect.Many
+             [ set_st st'
+             ; set_selected None
+             ; Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "logEvent" "move") ()
+             ])
   in
 
   let handle_click_point (pt : int) =
@@ -1754,6 +1798,7 @@ let app_component =
                    ~on_click:(Vdom.Effect.Many
                      [ set_toast (Some "Copied UID ✓")
                      ; Vdom.Effect.of_sync_fun (fun () ->
+                         Js_bridge.call_env1 "logEvent" "share_click";
                          match uid_opt with
                          | None -> ()
                          | Some u -> Js_bridge.copy_to_clipboard u) ()
@@ -1765,6 +1810,7 @@ let app_component =
                    ~on_click:(Vdom.Effect.Many
                      [ set_toast (Some "Copied Room ✓")
                      ; Vdom.Effect.of_sync_fun (fun () ->
+                         Js_bridge.call_env1 "logEvent" "share_click";
                          match room_opt with
                          | None -> ()
                          | Some r -> Js_bridge.copy_to_clipboard r) ()
@@ -1807,6 +1853,27 @@ let app_component =
        ; (* Incoming Invites *)
          card ~title:(Some "Incoming Invites")
            [ invites_view ]
+
+       ; (* Enable Notifications *)
+         lobby_btn
+           ~id:"btn-notify"
+           ~label:"Enable Notifications"
+           ~disabled:(not is_signed_in)
+           ~on_click:(Vdom.Effect.Many
+             [ set_toast (Some "Notifications enabled ✓")
+             ; Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "requestNotificationPermission") ()
+             ])
+
+       ; (* Feedback *)
+         lobby_btn
+           ~id:"btn-feedback"
+           ~label:"Feedback"
+           ~disabled:false
+           ~on_click:(Vdom.Effect.Many
+             [ Vdom.Effect.of_sync_fun (fun () ->
+                 Js_bridge.call_env1 "logEvent" "feedback_open";
+                 Js_bridge.open_url "https://docs.google.com/forms/d/e/1FAIpQLSeOg1t5Ng9oew6LF54XPeFdred5GvhrI9fykMWoOQG-KqUAnQ/viewform?usp=header") ()
+             ])
 
        ; (* Advanced toggle *)
          lobby_btn

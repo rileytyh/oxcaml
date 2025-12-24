@@ -1,7 +1,8 @@
 // ui/firebase_debug.js
 // - Does NOT auto sign-in.
-// - Exposes window.firebaseEnv with signIn() that performs anonymous sign-in on demand.
-// - Also listens to auth state changes so refresh/reload stays consistent.
+// - Exposes window.firebaseEnv with signIn() on demand.
+// - Adds Notification permission helpers.
+// - Keeps env stable across reload and emits firebaseEnvChanged.
 
 (function () {
   const b = window.__firebaseBindings;
@@ -28,68 +29,119 @@
     return x.slice(0, n) + "…" + x.slice(-2);
   }
 
-  const env = {
-    // core
-    ready: false,
-    uid: null,
-    db: b.db,
-    auth: b.auth,
+  // If someone overwrote firebaseEnv earlier, keep fields but patch missing APIs
+  const env = window.firebaseEnv && typeof window.firebaseEnv === "object"
+    ? window.firebaseEnv
+    : {};
 
-    // firestore fns
-    collection: b.collection,
-    doc: b.doc,
-    getDocs: b.getDocs,
-    getDoc: b.getDoc,
-    addDoc: b.addDoc,
-    setDoc: b.setDoc,
-    updateDoc: b.updateDoc,
-    onSnapshot: b.onSnapshot,
-    serverTimestamp: b.serverTimestamp,
-    query: b.query,
-    where: b.where,
-    limit: b.limit,
+  // core
+  env.ready = env.ready || false;
+  env.uid = env.uid || null;
+  env.db = b.db;
+  env.auth = b.auth;
 
-    // runtime fields set by quickmatch.js
-    roomId: null,
-    role: null,
-    status: "signed_out", // signed_out | signing_in | signed_in | waiting | matched | error
-    sendState: null,
+  // firestore fns
+  env.collection = b.collection;
+  env.doc = b.doc;
+  env.getDocs = b.getDocs;
+  env.getDoc = b.getDoc;
+  env.addDoc = b.addDoc;
+  env.setDoc = b.setDoc;
+  env.updateDoc = b.updateDoc;
+  env.onSnapshot = b.onSnapshot;
+  env.serverTimestamp = b.serverTimestamp;
+  env.query = b.query;
+  env.where = b.where;
+  env.limit = b.limit;
 
-    // conservative default (prevents accidental reseed)
-    roomHasState: true,
+  // runtime fields set by quickmatch.js
+  env.roomId = env.roomId || null;
+  env.role = env.role || null;
+  env.status = env.status || "signed_out"; // signed_out | signing_in | signed_in | waiting | matched | error
+  env.sendState = env.sendState || null;
 
-    // prevent echo loop after applying remote
-    _suppressSendUntil: 0,
+  // conservative default (prevents accidental reseed)
+  if (typeof env.roomHasState !== "boolean") env.roomHasState = true;
 
-    // helper
-    shortUid: () => shortId(env.uid, 6),
+  // prevent echo loop after applying remote
+  env._suppressSendUntil = env._suppressSendUntil || 0;
 
-    // Sign in on demand (anonymous/guest)
-    signIn: async () => {
-      try {
-        env.status = "signing_in";
-        emitChanged();
+  // analytics placeholders (analytics.js will overwrite with real impl if available)
+  if (typeof env.logEvent !== "function") env.logEvent = () => {};
+  if (typeof env.logEventWith !== "function") env.logEventWith = () => {};
+  if (typeof env._analyticsLog !== "function") env._analyticsLog = () => {};
 
-        let user = b.auth.currentUser;
-        if (!user) {
-          const cred = await b.signInAnonymously(b.auth);
-          user = cred.user;
-        }
+  // notification flags
+  if (typeof env.notificationsEnabled !== "boolean") env.notificationsEnabled = false;
 
-        env.uid = user.uid;
-        env.ready = true;
-        env.status = "signed_in";
-        emitChanged();
+  env.shortUid = () => shortId(env.uid, 6);
 
-        console.log("[firebase_debug] signed in anon uid =", env.uid);
-        return env.uid;
-      } catch (e) {
-        console.error("[firebase_debug] sign-in failed:", e);
-        env.status = "error";
-        emitChanged();
-        throw e;
+  // Notification permission request
+  env.requestNotificationPermission = async () => {
+    try {
+      if (!("Notification" in window)) {
+        console.warn("[notify] Notification API not supported");
+        return "unsupported";
       }
-    },
+
+      let perm = Notification.permission;
+      if (perm === "granted") {
+        env.notificationsEnabled = true;
+        emitChanged();
+        return perm;
+      }
+
+      perm = await Notification.requestPermission();
+      env.notificationsEnabled = (perm === "granted");
+      emitChanged();
+      console.log("[notify] permission =", perm);
+      return perm;
+    } catch (e) {
+      console.warn("[notify] requestPermission failed:", e);
+      return "error";
+    }
+  };
+
+  // fire a notification (safe)
+  env.notify = (title, options) => {
+    try {
+      if (!("Notification" in window)) return false;
+      if (Notification.permission !== "granted") return false;
+      if (!env.notificationsEnabled) return false;
+      new Notification(title, options || {});
+      return true;
+    } catch (e) {
+      console.warn("[notify] failed:", e);
+      return false;
+    }
+  };
+
+  // Sign in on demand (anonymous/guest)
+  env.signIn = async () => {
+    try {
+      env.status = "signing_in";
+      emitChanged();
+
+      let user = b.auth.currentUser;
+      if (!user) {
+        const cred = await b.signInAnonymously(b.auth);
+        user = cred.user;
+      }
+
+      env.uid = user.uid;
+      env.ready = true;
+      env.status = "signed_in";
+      env.logEvent("sign_in");
+      emitChanged();
+
+      console.log("[firebase_debug] signed in anon uid =", env.uid);
+      return env.uid;
+    } catch (e) {
+      console.error("[firebase_debug] sign-in failed:", e);
+      env.status = "error";
+      emitChanged();
+      throw e;
+    }
   };
 
   window.firebaseEnv = env;
