@@ -1,5 +1,5 @@
 // ui/quickmatch.js
-// Matchmaking + room sync (Firestore <-> OCaml bridge)
+// Matchmaking + room sync + Invite flow (Firestore <-> OCaml bridge)
 //
 // IMPORTANT: This file does NOT hide #app.
 // Your OCaml app renders both lobby + game inside #app,
@@ -52,7 +52,235 @@ function normalizeRole(x) {
  * Matchmaking model:
  * - queue/{doc}: { uid, status: waiting|matched|cancelled, matchedRoomId? }
  * - rooms/{room}: { players:{p1,p2}, by, stateSexp, updatedAt, createdAt }
+ *
+ * Invite model (MVP):
+ * - invites/{inviteId}: {
+ *     fromUid, toUid, roomId,
+ *     status: "pending" | "accepted" | "declined",
+ *     createdAt, respondedAt?
+ *   }
  */
+
+// -------------------- INVITES: helpers --------------------
+
+/**
+ * (Sender) Create invite:
+ * - create a dedicated room (sender is White, status=waiting, attachRoomSync)
+ * - create invites doc (pending)
+ * - IMPORTANT: start listening the invite doc; once accepted, sender flips to matched and enters game
+ */
+async function createInvite(toUid) {
+  const env = await waitSignedIn();
+  const { db, uid, collection, addDoc, serverTimestamp } = env;
+
+  if (!truthyStr(toUid)) throw new Error("toUid required");
+  if (toUid === uid) throw new Error("Cannot invite yourself");
+
+  // Create a dedicated room for this invite (host becomes White)
+  const room = await createGame();
+  const roomId = room.roomId;
+
+  const invitesCol = collection(db, "invites");
+  const inviteRef = await addDoc(invitesCol, {
+    fromUid: uid,
+    toUid,
+    roomId,
+    status: "pending",
+    createdAt: serverTimestamp(),
+  });
+
+  env.lastInviteId = inviteRef.id;
+  env.lastInvitedTo = toUid;
+  env.lastInviteStatus = "pending";
+  emitChanged(env);
+
+  // KEY FIX: sender listens invite status and auto-enters when accepted
+  try {
+    await listenInviteStatus(inviteRef.id);
+  } catch (e) {
+    console.warn("[invite] listenInviteStatus failed:", e?.message || e);
+  }
+
+  return { inviteId: inviteRef.id, roomId };
+}
+
+/**
+ * (Receiver) Accept invite:
+ * - mark invite accepted
+ * - join room as Black (joinGame sets matched + attachRoomSync)
+ */
+async function acceptInvite(inviteId) {
+  const env = await waitSignedIn();
+  const { db, uid, doc, getDoc, updateDoc, serverTimestamp } = env;
+
+  if (!truthyStr(inviteId)) throw new Error("inviteId required");
+
+  const invRef = doc(db, "invites", inviteId);
+  const snap = await getDoc(invRef);
+  if (!snap.exists()) throw new Error("Invite not found");
+
+  const inv = snap.data() || {};
+  if (inv.toUid !== uid) throw new Error("Not your invite");
+  if (!truthyStr(inv.roomId)) throw new Error("Invite missing roomId");
+
+  // Mark accepted
+  await updateDoc(invRef, {
+    status: "accepted",
+    respondedAt: serverTimestamp(),
+  });
+
+  // Join room as Black
+  await joinGame(inv.roomId);
+
+  env.lastAcceptedInviteId = inviteId;
+  emitChanged(env);
+
+  return { ok: true, roomId: inv.roomId };
+}
+
+async function declineInvite(inviteId) {
+  const env = await waitSignedIn();
+  const { db, uid, doc, getDoc, updateDoc, serverTimestamp } = env;
+
+  if (!truthyStr(inviteId)) throw new Error("inviteId required");
+
+  const invRef = doc(db, "invites", inviteId);
+  const snap = await getDoc(invRef);
+  if (!snap.exists()) throw new Error("Invite not found");
+
+  const inv = snap.data() || {};
+  if (inv.toUid !== uid) throw new Error("Not your invite");
+
+  await updateDoc(invRef, {
+    status: "declined",
+    respondedAt: serverTimestamp(),
+  });
+
+  env.lastDeclinedInviteId = inviteId;
+  emitChanged(env);
+
+  return { ok: true };
+}
+
+/**
+ * Listen incoming invites for current user (pending only).
+ * Updates env.incomingInvites = [{id, ...data}]
+ */
+async function listenIncomingInvites() {
+  const env = await waitSignedIn();
+  const { db, uid, collection, query, where, onSnapshot } = env;
+
+  // cleanup old
+  if (env._unsubInvites && typeof env._unsubInvites === "function") {
+    try { env._unsubInvites(); } catch {}
+  }
+
+  const invitesCol = collection(db, "invites");
+  const q = query(
+    invitesCol,
+    where("toUid", "==", uid),
+    where("status", "==", "pending")
+  );
+
+  env.incomingInvites = env.incomingInvites || [];
+  emitChanged(env);
+
+  env._unsubInvites = onSnapshot(q, (snap) => {
+    const arr = [];
+    for (const d of snap.docs) {
+      const data = d.data() || {};
+      arr.push({ id: d.id, ...data });
+    }
+    // newest first if createdAt available; otherwise keep as-is
+    arr.sort((a, b) => {
+      const ta = a.createdAt?.seconds || 0;
+      const tb = b.createdAt?.seconds || 0;
+      return tb - ta;
+    });
+    env.incomingInvites = arr;
+    emitChanged(env);
+  });
+
+  return true;
+}
+
+/**
+ * (Sender) Listen outgoing invite status:
+ * - if accepted: sender flips status->matched and stays/enters the same room as White
+ * - if declined: sender can go back to signed_in (optional)
+ */
+async function listenInviteStatus(inviteId) {
+  const env = await waitSignedIn();
+  const { db, uid, doc, onSnapshot, getDoc } = env;
+  if (!truthyStr(inviteId)) throw new Error("inviteId required");
+
+  if (env._unsubInviteStatus && typeof env._unsubInviteStatus === "function") {
+    try { env._unsubInviteStatus(); } catch {}
+  }
+
+  const invRef = doc(db, "invites", inviteId);
+
+  env._unsubInviteStatus = onSnapshot(invRef, async (snap) => {
+    if (!snap.exists()) return;
+    const inv = snap.data() || {};
+    if (inv.fromUid !== uid) return;
+
+    const status = inv.status || null;
+    env.lastInviteStatus = status;
+    emitChanged(env);
+
+    // accepted => sender should enter game
+    if (status === "accepted") {
+      const roomId = inv.roomId;
+      if (truthyStr(roomId)) {
+        // sender is White in this invite-room
+        env.roomId = roomId;
+        env.role = "white";
+        env.status = "matched";
+        emitChanged(env);
+
+        // ensure room sync is attached (createGame already does, but safe)
+        try {
+          // if you already attached, this will just reattach safely
+          await attachRoomSync(roomId);
+        } catch (e) {
+          console.warn("[invite] attachRoomSync failed:", e?.message || e);
+        }
+      }
+    }
+
+    // declined => optional: reset sender lobby status
+    if (status === "declined") {
+      // keep roomId/role as-is if you want, but usually go back to signed_in
+      env.status = "signed_in";
+      emitChanged(env);
+    }
+  });
+
+  // also do one immediate read (helps if status already changed before listener attaches)
+  try {
+    const s0 = await getDoc(invRef);
+    if (s0.exists()) {
+      const inv0 = s0.data() || {};
+      if (inv0.fromUid === uid) {
+        env.lastInviteStatus = inv0.status || null;
+        emitChanged(env);
+        if (inv0.status === "accepted" && truthyStr(inv0.roomId)) {
+          env.roomId = inv0.roomId;
+          env.role = "white";
+          env.status = "matched";
+          emitChanged(env);
+          await attachRoomSync(inv0.roomId);
+        }
+      }
+    }
+  } catch {}
+
+  return true;
+}
+
+// -------------------- EXISTING: quickmatch / rooms --------------------
+
 async function quickmatch() {
   const env = await waitSignedIn();
   const {
@@ -237,12 +465,10 @@ async function attachRoomSync(roomId) {
   env.role = normalizeRole(env.role) || env.role;
   const roomRef = doc(db, "rooms", roomId);
 
-  // Track last applied state by value (NOT by updatedAt ms).
-  // This prevents "same-ms" serverTimestamp collisions from dropping updates.
   env._lastAppliedSexp = env._lastAppliedSexp || "";
   env._lastSentSexp = env._lastSentSexp || "";
 
-  // ---- 0) Read current room ONCE to decide whether to seed initial state
+  // ---- 0) Read current room ONCE
   try {
     const s0 = await getDoc(roomRef);
     const d0 = s0.exists() ? (s0.data() || {}) : {};
@@ -262,20 +488,16 @@ async function attachRoomSync(roomId) {
       emitChanged(env);
     }
   } catch {
-    // conservative
     env.roomHasState = true;
     emitChanged(env);
   }
 
-  // ---- 1) Send state to Firestore (called from OCaml via firebaseEnv.sendState)
+  // ---- 1) Send state
   env.sendState = async (sexpString) => {
     if (!roomId) return;
     if (Date.now() < (env._suppressSendUntil || 0)) return;
     if (!truthyStr(sexpString)) return;
-
-    // Drop exact duplicates (prevents spam when UI changes don't alter game state).
     if (sexpString === env._lastSentSexp) return;
-
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
 
     env._lastSentSexp = sexpString;
@@ -284,9 +506,6 @@ async function attachRoomSync(roomId) {
       stateSexp: sexpString,
       by: uid,
       updatedAt: serverTimestamp(),
-      // optional debug fields:
-      // clientMs: Date.now(),
-      // role: env.role || null,
     });
 
     if (!env.roomHasState) {
@@ -297,12 +516,10 @@ async function attachRoomSync(roomId) {
 
   window.firebaseEnv.sendState = env.sendState;
 
-  // ---- 2) Seed initial state ONLY if:
-  // - I am WHITE
-  // - roomHasState is false (room not initialized yet)
+  // ---- 2) Seed initial state only if white and room not initialized
   const tryRequestSend = () => {
     if (normalizeRole(env.role) !== "white") return true;
-    if (env.roomHasState) return true; // IMPORTANT: do NOT reseed
+    if (env.roomHasState) return true;
     if (window.ocamlRemote && typeof window.ocamlRemote.request_send === "function") {
       window.ocamlRemote.request_send();
       return true;
@@ -317,11 +534,9 @@ async function attachRoomSync(roomId) {
     }, 80);
   }
 
-  // ---- 3) unsubscribe old listener if any
+  // ---- 3) unsubscribe old listener
   if (env._unsubRoom && typeof env._unsubRoom === "function") {
-    try {
-      env._unsubRoom();
-    } catch {}
+    try { env._unsubRoom(); } catch {}
   }
 
   env._seenRemote = env._seenRemote || false;
@@ -340,15 +555,10 @@ async function attachRoomSync(roomId) {
     }
 
     if (!hasState) return;
-
-    // VALUE-based de-dupe (important!)
     if (sexp === env._lastAppliedSexp) return;
 
     const fromSelf = d.by && d.by === uid;
 
-    // Apply if:
-    // - from other player, OR
-    // - we have not applied any room state yet (reload case)
     if (!fromSelf || !env._seenRemote) {
       env._lastAppliedSexp = sexp;
       env._suppressSendUntil = Date.now() + 1200;
@@ -366,17 +576,31 @@ async function attachRoomSync(roomId) {
   return true;
 }
 
-// bootstrap: export API for OCaml
+// bootstrap: export API for OCaml + start invite listener
 (async function bootstrap() {
   const env = await waitFirebaseBindings();
+
   env.quickmatch = quickmatch;
   env.createGame = createGame;
   env.joinGame = joinGame;
   env.attachRoomSync = attachRoomSync;
 
-  // roomHasState is used to prevent white from overwriting existing games
-  // and to allow exactly-once seeding for fresh rooms.
+  // Invite API
+  env.createInvite = createInvite;         // createInvite(toUid) -> {inviteId, roomId}
+  env.acceptInvite = acceptInvite;         // acceptInvite(inviteId) -> joins room
+  env.declineInvite = declineInvite;       // declineInvite(inviteId)
+  env.listenIncomingInvites = listenIncomingInvites; // start listener
+  env.listenInviteStatus = listenInviteStatus;       // sender listens accept/decline
+
   if (typeof env.roomHasState === "undefined") env.roomHasState = true;
+
+  // Kick off invite inbox listener automatically once signed in
+  try {
+    await waitSignedIn();
+    await listenIncomingInvites();
+  } catch (e) {
+    console.warn("[quickmatch] invite listener not started:", e?.message || e);
+  }
 
   emitChanged(env);
 })();

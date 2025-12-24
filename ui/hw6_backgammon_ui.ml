@@ -59,11 +59,13 @@ let player_to_string = function
   | Player_kind.Black -> "black"
 ;;
 
+let short_id (s : string) : string =
+  let s = String.strip s in
+  if String.length s <= 12 then s else String.prefix s 6 ^ "…" ^ String.suffix s 2
+;;
+
 (* =============================================================================
-   JS bridge: OCaml <-> Firebase/Quickmatch JS
-   - JS sets: window.firebaseEnv.sendState = async (sexpString) => { ... }
-   - OCaml exposes: window.ocamlRemote.set_state(sexpString)
-                 and window.ocamlRemote.request_send()
+   JS bridge: OCaml <-> Firebase/Quickmatch/Invite JS
    ============================================================================= *)
 
 module Js_bridge = struct
@@ -84,7 +86,7 @@ module Js_bridge = struct
     with
     | _ -> None
 
-  (* NEW: Safely read window.firebaseEnv.<field> as bool option *)
+  (* Safely read window.firebaseEnv.<field> as bool option *)
   let get_firebase_bool_field (field : string) : bool option =
     try
       let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
@@ -112,7 +114,6 @@ module Js_bridge = struct
     get_firebase_string_field "uid"
 
   let get_firebase_room_id () : string option =
-    (* quickmatch.js uses roomId *)
     get_firebase_string_field "roomId"
 
   let get_firebase_status () : string option =
@@ -130,6 +131,18 @@ module Js_bridge = struct
     with
     | _ -> ()
 
+  (* Call a one-arg JS function: window.firebaseEnv.<name>(string) *)
+  let call_env1 (name : string) (arg : string) : unit =
+    try
+      let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
+      let f = Js.Unsafe.get env name in
+      let ty = Js.to_string (Js.typeof f) in
+      if String.equal ty "function"
+      then ignore (Js.Unsafe.fun_call f [| Js.Unsafe.inject (Js.string arg) |])
+      else ()
+    with
+    | _ -> ()
+
   (* Send the given S-expression to JS (Firebase) if possible. *)
   let send_state (sexp : string) : unit =
     try
@@ -139,9 +152,66 @@ module Js_bridge = struct
     with
     | _ -> ()
 
+  (* Copy helper (sync) — avoid navigator.clipboard Promise rejection issues. *)
+  let copy_to_clipboard (s : string) : unit =
+    try
+      let doc = Dom_html.document in
+      let ta = Dom_html.createTextarea doc in
+      Js.Unsafe.set ta "value" (Js.string s);
+      let style = Js.Unsafe.get ta "style" in
+      Js.Unsafe.set style "position" (Js.string "fixed");
+      Js.Unsafe.set style "left" (Js.string "-1000px");
+      Js.Unsafe.set style "top" (Js.string "-1000px");
+      Js.Unsafe.set style "opacity" (Js.string "0");
+
+      let body = Js.Unsafe.get doc "body" in
+      ignore (Js.Unsafe.meth_call body "appendChild" [| Js.Unsafe.inject ta |]);
+
+      (* select + copy must happen in the same user gesture *)
+      ignore (Js.Unsafe.meth_call ta "focus" [||]);
+      ignore (Js.Unsafe.meth_call ta "select" [||]);
+      ignore (Js.Unsafe.meth_call doc "execCommand" [| Js.Unsafe.inject (Js.string "copy") |]);
+
+      ignore (Js.Unsafe.meth_call body "removeChild" [| Js.Unsafe.inject ta |])
+    with
+    | _ -> ()
+
+  (* Read firebaseEnv.incomingInvites (array of objects with fields: id, fromUid, roomId) *)
+  type invite =
+    { id : string
+    ; from_uid : string option
+    ; room_id : string option
+    }
+
+  let get_incoming_invites () : invite list =
+    try
+      let env = Js.Unsafe.get Dom_html.window "firebaseEnv" in
+      let arr = Js.Unsafe.get env "incomingInvites" in
+      let len_v = Js.Unsafe.get arr "length" in
+      let len =
+        match Js.to_string (Js.typeof len_v) with
+        | "number" -> int_of_float (Js.float_of_number len_v)
+        | _ -> 0
+      in
+      List.init len ~f:(fun i ->
+        let it = Js.Unsafe.get arr i in
+        let get_str (k : string) =
+          try
+            let v = Js.Unsafe.get it k in
+            if String.equal (Js.to_string (Js.typeof v)) "string"
+            then Some (Js.to_string v)
+            else None
+          with _ -> None
+        in
+        let id = Option.value (get_str "id") ~default:"" in
+        { id; from_uid = get_str "fromUid"; room_id = get_str "roomId" })
+      |> List.filter ~f:(fun inv -> not (String.is_empty inv.id))
+    with
+    | _ -> []
+
   (* Expose OCaml entrypoints for JS:
      - set_state(sexpString): apply remote state coming from Firestore
-     - request_send(): ask OCaml to re-send its current state (e.g. after match)
+     - request_send(): ask OCaml to re-send its current state
   *)
   let expose_ocaml_remote
       ~(apply_remote : string -> unit)
@@ -202,6 +272,10 @@ module Debug_open = struct
   type t = bool [@@deriving sexp, compare, equal]
 end
 
+module Advanced_open = struct
+  type t = bool [@@deriving sexp, compare, equal]
+end
+
 module Debug_dice = struct
   type t = string [@@deriving sexp, compare, equal]
 end
@@ -214,19 +288,20 @@ module Opt_string = struct
   type t = string option [@@deriving sexp, compare, equal]
 end
 
-(* NEW *)
 module Opt_bool = struct
   type t = bool option [@@deriving sexp, compare, equal]
 end
 
-(* NEW: have we applied at least one remote state? *)
 module Seen_remote = struct
   type t = bool [@@deriving sexp, compare, equal]
 end
 
-(* NEW: suppress echo-send when applying remote state *)
 module Applying_remote = struct
   type t = bool [@@deriving sexp, compare, equal]
+end
+
+module Text = struct
+  type t = string [@@deriving sexp, compare, equal]
 end
 
 (* (A) payload module *)
@@ -945,6 +1020,52 @@ let small_btn ~testid ~label ~disabled ~on_click =
     [ Vdom.Node.text label ]
 ;;
 
+let input_box ~id ~value ~placeholder ~on_input =
+  Vdom.Node.input
+    ~attrs:
+      [ attr "id" id
+      ; attr "data-testid" id
+      ; attr "value" value
+      ; attr "placeholder" placeholder
+      ; attr "style"
+          "width:280px;padding:10px 12px;border-radius:12px;border:1px solid #333;\
+           background:#0b0b0b;color:#fff;outline:none;"
+      ; Vdom.Attr.on_input (fun _ s -> on_input s)
+      ]
+    ()
+;;
+
+let lobby_btn ~id ~label ~disabled ~on_click =
+  let base_style =
+    "width:280px;padding:12px 14px;border-radius:14px;border:1px solid #333;\
+     background:#111;color:#fff;font-weight:800;font-size:15px;cursor:pointer;\
+     box-shadow:0 8px 18px rgba(0,0,0,0.25);"
+  in
+  let disabled_style =
+    "width:280px;padding:12px 14px;border-radius:14px;border:1px solid #333;\
+     background:#111;color:#fff;font-weight:800;font-size:15px;opacity:0.45;cursor:not-allowed;\
+     box-shadow:0 8px 18px rgba(0,0,0,0.25);"
+  in
+  Vdom.Node.button
+    ~attrs:
+      ([ attr "data-testid" id
+       ; attr "style" (if disabled then disabled_style else base_style)
+       ]
+       @ (if disabled
+          then [ attr "disabled" "true" ]
+          else [ Vdom.Attr.on_click (fun _ -> on_click) ]))
+    [ Vdom.Node.text label ]
+;;
+
+let meta_line ~k ~v =
+  Vdom.Node.div
+    ~attrs:[ attr "style" "font-size:12px;color:#bbb;display:flex;gap:8px;justify-content:space-between;" ]
+    [ Vdom.Node.span ~attrs:[ attr "style" "color:#888;" ] [ Vdom.Node.text k ]
+    ; Vdom.Node.span ~attrs:[ attr "style" "color:#ddd;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" ]
+        [ Vdom.Node.text v ]
+    ]
+;;
+
 (* =============================================================================
    Main app
    ============================================================================= *)
@@ -962,31 +1083,39 @@ let app_component =
   let%sub st, set_st = Bonsai.state ~default_model:initial_state (module Game_state) in
   let%sub selected, set_selected = Bonsai.state ~default_model:None (module Selected_source) in
   let%sub debug_open, set_debug_open = Bonsai.state ~default_model:false (module Debug_open) in
+  let%sub advanced_open, set_advanced_open =
+    Bonsai.state ~default_model:false (module Advanced_open)
+  in
   let%sub debug_dice, set_debug_dice = Bonsai.state ~default_model:"6,6" (module Debug_dice) in
   let%sub last_sent, set_last_sent = Bonsai.state ~default_model:None (module Last_sent) in
 
-  (* NEW: env state (so OCaml re-renders when JS changes firebaseEnv fields) *)
+  (* env state (so OCaml re-renders when JS changes firebaseEnv fields) *)
   let%sub env_uid, set_env_uid = Bonsai.state ~default_model:None (module Opt_string) in
   let%sub env_room, set_env_room = Bonsai.state ~default_model:None (module Opt_string) in
   let%sub env_status, set_env_status = Bonsai.state ~default_model:None (module Opt_string) in
   let%sub env_role, set_env_role = Bonsai.state ~default_model:None (module Opt_string) in
-
-  (* NEW: roomHasState propagated from JS *)
   let%sub env_room_has_state, set_env_room_has_state =
     Bonsai.state ~default_model:None (module Opt_bool)
   in
 
-  (* NEW: have we already applied remote state? (prevents black from overwriting room on mount) *)
+  (* invite UI inputs *)
+  let%sub invite_to_uid, set_invite_to_uid = Bonsai.state ~default_model:"" (module Text) in
+  let%sub join_room_text, set_join_room_text = Bonsai.state ~default_model:"" (module Text) in
+
+  (* small toast message for UI feedback (e.g., copied) *)
+  let%sub toast, set_toast = Bonsai.state ~default_model:None (module Opt_string) in
+
+  (* have we applied at least one remote state? *)
   let%sub seen_remote, set_seen_remote =
     Bonsai.state ~default_model:false (module Seen_remote)
   in
 
-  (* NEW: applying_remote gate (prevents echo send after set_state) *)
+  (* suppress echo-send when applying remote state *)
   let%sub applying_remote, set_applying_remote =
     Bonsai.state ~default_model:false (module Applying_remote)
   in
 
-  (* NEW: listen to window "firebaseEnvChanged" and copy fields into Bonsai state *)
+  (* Listen to window "firebaseEnvChanged" and copy fields into Bonsai state *)
   let%sub () =
     Bonsai.Edge.lifecycle
       ~on_activate:
@@ -996,7 +1125,6 @@ let app_component =
          and set_env_role = set_env_role
          and set_env_room_has_state = set_env_room_has_state
          in
-         (* 1) initial sync as an Effect *)
          let initial_eff =
            Vdom.Effect.Many
              [ set_env_uid (Js_bridge.get_firebase_uid ())
@@ -1006,7 +1134,6 @@ let app_component =
              ; set_env_room_has_state (Js_bridge.get_firebase_room_has_state ())
              ]
          in
-         (* 2) attach event listener (sync callback uses Expert.handle) *)
          let attach () =
            let cb =
              Js.wrap_callback (fun (ev_any : Js.Unsafe.any) ->
@@ -1022,7 +1149,6 @@ let app_component =
                in
                ignore (Bonsai_web.Effect.Expert.handle ev eff : unit))
            in
-           (* window.addEventListener("firebaseEnvChanged", cb, false) *)
            ignore
              (Js.Unsafe.meth_call
                 Dom_html.window
@@ -1031,12 +1157,24 @@ let app_component =
                  ; Js.Unsafe.inject cb
                  ; Js.Unsafe.inject Js._false
                 |]);
-           (* prevent GC *)
            Js.Unsafe.set Dom_html.window "__ocamlFirebaseCb" cb
          in
          Vdom.Effect.Many [ Vdom.Effect.of_sync_fun attach (); initial_eff ])
       ()
   in
+
+   (* When signed in, ensure invite listener starts (in case JS didn't start it) *)
+   let%sub () =
+     Bonsai.Edge.on_change
+       (module Opt_string)
+       (let%map env_uid = env_uid in env_uid)
+       ~callback:
+         (Bonsai.Value.return (fun uid_opt ->
+            match uid_opt with
+            | None -> Vdom.Effect.Ignore
+            | Some _ ->
+              Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "listenIncomingInvites") ()))
+   in
 
   (* Expose window.ocamlRemote.set_state + request_send once on mount *)
   let%sub () =
@@ -1062,6 +1200,7 @@ let app_component =
                        ; set_seen_remote true
                        ; set_st st_remote
                        ; set_selected None
+                       ; set_applying_remote false
                        ]
                    in
                    let dummy_ev : #Dom_html.event Js.t =
@@ -1071,8 +1210,6 @@ let app_component =
                  with
                  | _ -> ())
              ~request_send:(fun () ->
-                 (* On match, only let WHITE seed initial state, and only if roomHasState=false.
-                    Otherwise, do NOT push (prevents overwrite on reload). *)
                  let s = !(Js_bridge.latest_state_sexp) in
                  let role_opt = Js_bridge.get_firebase_role () in
                  let role_player : Player_kind.t option =
@@ -1096,7 +1233,7 @@ let app_component =
       ()
   in
 
-  (* (C) Whenever local state changes, push it to Firestore if allowed (see should_send). *)
+  (* Whenever local state changes, push it to Firestore if allowed *)
   let%sub () =
     Bonsai.Edge.on_change
       (module Push_payload)
@@ -1140,14 +1277,9 @@ let app_component =
       ~callback:
         (let%map last_sent = last_sent
          and set_last_sent = set_last_sent
-         and applying_remote = applying_remote
-         and set_applying_remote = set_applying_remote
          in
          fun ({ Push_payload.sexp; should_send } : Push_payload.t) ->
-           if applying_remote then
-             (* clear flag, do NOT echo-send *)
-             set_applying_remote false
-           else if not should_send then Vdom.Effect.Ignore
+           if not should_send then Vdom.Effect.Ignore
            else
              match last_sent with
              | Some s when String.equal s sexp ->
@@ -1163,13 +1295,22 @@ let app_component =
   and set_selected = set_selected
   and debug_open = debug_open
   and set_debug_open = set_debug_open
+  and advanced_open = advanced_open
+  and set_advanced_open = set_advanced_open
   and debug_dice = debug_dice
   and set_debug_dice = set_debug_dice
   and set_last_sent = set_last_sent
   and env_uid = env_uid
   and env_room = env_room
   and env_status = env_status
-  and env_role = env_role in
+  and env_role = env_role
+  and invite_to_uid = invite_to_uid
+  and set_invite_to_uid = set_invite_to_uid
+  and join_room_text = join_room_text
+  and set_join_room_text = set_join_room_text
+  and toast = toast
+  and set_toast = set_toast
+  in
 
   let p_opt, dice_left = whose_turn_and_dice st in
   let ph = phase_of ~st ~selected in
@@ -1187,7 +1328,11 @@ let app_component =
   let uid_opt = env_uid in
   let room_opt = env_room in
   let is_signed_in = Option.is_some uid_opt in
-  let is_matched = Option.is_some my_role_opt in
+  let is_matched =
+    match env_status with
+    | Some s -> String.Caseless.equal (String.strip s) "matched"
+    | None -> false
+  in
 
   let can_interact =
     match my_role_opt, p_opt with
@@ -1212,7 +1357,6 @@ let app_component =
 
   let has_any_move = not (List.is_empty valid_srcs) in
 
-  (* NEW GAME: only current-turn player can click (handled in button disable). *)
   let do_new_game =
     if not can_interact then Vdom.Effect.Ignore
     else
@@ -1224,7 +1368,6 @@ let app_component =
         in
         let sexp = Sexplib.Sexp.to_string (Game_state.sexp_of_t st1) in
         Js_bridge.set_latest_state sexp;
-        (* Send immediately; on_change will ignore duplicate because last_sent set. *)
         Js_bridge.send_state sexp;
         Vdom.Effect.Many
           [ set_last_sent (Some sexp)
@@ -1356,10 +1499,6 @@ let app_component =
       [ Vdom.Node.text "Backgammon" ]
   in
 
-  let short_id (s : string) : string =
-    let s = String.strip s in
-    if String.length s <= 10 then s else String.prefix s 6 ^ "…" ^ String.suffix s 2
-  in
   let pretty_role = function
     | None -> "—"
     | Some Player_kind.White -> "White"
@@ -1443,7 +1582,6 @@ let app_component =
         | Select_destination -> false
         | _ -> true
     in
-    (* NEW: only current-turn player can click New Game *)
     let new_game_disabled = not can_interact in
     let hint_txt =
       if not can_interact then "Waiting for opponent…"
@@ -1531,59 +1669,175 @@ let app_component =
     | None -> false
   in
 
+  (* -------------------- LOBBY (with Invite + Copy/Join) -------------------- *)
+
+  let incoming =
+    Js_bridge.get_incoming_invites ()
+  in
+
+  let invites_view =
+    if List.is_empty incoming then
+      Vdom.Node.div
+        ~attrs:[ attr "style" "color:#777;font-size:13px;text-align:center;margin-top:6px;" ]
+        [ Vdom.Node.text "No incoming invites." ]
+    else
+      Vdom.Node.div
+        ~attrs:[ attr "style" "display:flex;flex-direction:column;gap:10px;margin-top:6px;" ]
+        (List.map incoming ~f:(fun inv ->
+           let from_txt = Option.value_map inv.from_uid ~default:"—" ~f:short_id in
+           let room_txt2 = Option.value_map inv.room_id ~default:"—" ~f:short_id in
+           Vdom.Node.div
+             ~attrs:[ attr "style" "border:1px solid #333;border-radius:14px;background:#0f0f0f;padding:10px 12px;" ]
+             [ meta_line ~k:"From UID" ~v:from_txt
+             ; meta_line ~k:"Room" ~v:room_txt2
+             ; meta_line ~k:"Invite ID" ~v:(short_id inv.id)
+             ; Vdom.Node.div
+                 ~attrs:[ attr "style" "display:flex;gap:10px;justify-content:center;margin-top:10px;" ]
+                 [ lobby_btn
+                     ~id:(sprintf "btn-accept-%s" inv.id)
+                     ~label:"Accept"
+                     ~disabled:(not is_signed_in)
+                     ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "acceptInvite" inv.id) ())
+                 ; lobby_btn
+                     ~id:(sprintf "btn-decline-%s" inv.id)
+                     ~label:"Decline"
+                     ~disabled:(not is_signed_in)
+                     ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "declineInvite" inv.id) ())
+                 ]
+             ]))
+  in
+
+  let card ?(title=None) children =
+    Vdom.Node.div
+      ~attrs:[
+        attr "style"
+          "width:320px;border:1px solid #333;border-radius:16px;background:#0d0d0d;padding:12px 14px;"
+      ]
+      (match title with
+       | None -> children
+       | Some t ->
+         Vdom.Node.div ~attrs:[ attr "style" "font-weight:900;margin-bottom:8px;" ]
+           [ Vdom.Node.text t ]
+         :: children)
+  in
+
   let lobby_card =
-    let btn ~id ~label ~disabled ~on_click =
-      let base_style =
-        "width:280px;padding:14px 16px;border-radius:14px;border:1px solid #333;\
-         background:#111;color:#fff;font-weight:800;font-size:16px;cursor:pointer;\
-         box-shadow:0 8px 18px rgba(0,0,0,0.25);"
-      in
-      let disabled_style =
-        "width:280px;padding:14px 16px;border-radius:14px;border:1px solid #333;\
-         background:#111;color:#fff;font-weight:800;font-size:16px;opacity:0.45;cursor:not-allowed;\
-         box-shadow:0 8px 18px rgba(0,0,0,0.25);"
-      in
-      Vdom.Node.button
-        ~attrs:
-          ([ attr "data-testid" id
-           ; attr "style" (if disabled then disabled_style else base_style)
-           ]
-           @ (if disabled
-              then [ attr "disabled" "true" ]
-              else [ Vdom.Attr.on_click (fun _ -> on_click) ]))
-        [ Vdom.Node.text label ]
-    in
     Vdom.Node.div
       ~attrs:
         [ attr "data-testid" "lobby"
         ; attr "style"
-            "min-height:70vh;display:flex;flex-direction:column;align-items:center;\
-             justify-content:center;gap:14px;"
+            "min-height:80vh;display:flex;flex-direction:column;align-items:center;\
+             justify-content:center;gap:12px;padding:16px;"
         ]
-      [ Vdom.Node.div
-          ~attrs:[ attr "style" "font-size:44px;font-weight:900;margin-bottom:8px;" ]
-          [ Vdom.Node.text "Backgammon" ]
-      ; Vdom.Node.div
-          ~attrs:[ attr "style" "color:#666;font-size:14px;margin-bottom:14px;text-align:center;" ]
-          [ Vdom.Node.text (sprintf "Signed in: %s   ·   Room: %s   ·   Status: %s"
-                               (if is_signed_in then uid_txt else "No")
-                               room_txt
-                               match_txt)
-          ]
-      ; btn
-          ~id:"btn-signin"
-          ~label:"Sign in (Guest)"
-          ~disabled:is_signed_in
-          ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "signIn") ())
-      ; btn
-          ~id:"btn-quickmatch"
-          ~label:(if status_is_waiting then "Searching…" else "Quickmatch")
-          ~disabled:((not is_signed_in) || status_is_waiting)
-          ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "quickmatch") ())
-      ; Vdom.Node.div
-          ~attrs:[ attr "style" "margin-top:10px;color:#888;font-size:13px;text-align:center;max-width:520px;" ]
-          [ Vdom.Node.text "Tip: open this page on two browsers, click Sign in, then Quickmatch on both." ]
-      ]
+      ([ Vdom.Node.div
+           ~attrs:[ attr "style" "font-size:44px;font-weight:900;margin-bottom:6px;" ]
+           [ Vdom.Node.text "Backgammon" ]
+       ; (match toast with
+          | None -> Vdom.Node.none
+          | Some t ->
+            Vdom.Node.div
+              ~attrs:[ attr "style" "margin-top:-2px;margin-bottom:6px;color:#9fe870;font-weight:900;text-align:center;" ]
+              [ Vdom.Node.text t ])
+       ]
+       @
+       [ (* Status + Copy *)
+         card
+           [ meta_line ~k:"Status" ~v:match_txt
+           ; meta_line ~k:"Your UID" ~v:uid_txt
+           ; meta_line ~k:"Room" ~v:room_txt
+           ; Vdom.Node.div
+               ~attrs:[ attr "style" "display:flex;gap:10px;justify-content:center;margin-top:10px;" ]
+               [ lobby_btn
+                   ~id:"btn-copy-uid"
+                   ~label:"Copy UID"
+                   ~disabled:(not is_signed_in)
+                   ~on_click:(Vdom.Effect.Many
+                     [ set_toast (Some "Copied UID ✓")
+                     ; Vdom.Effect.of_sync_fun (fun () ->
+                         match uid_opt with
+                         | None -> ()
+                         | Some u -> Js_bridge.copy_to_clipboard u) ()
+                     ])
+               ; lobby_btn
+                   ~id:"btn-copy-room"
+                   ~label:"Copy Room"
+                   ~disabled:(not (Option.is_some room_opt))
+                   ~on_click:(Vdom.Effect.Many
+                     [ set_toast (Some "Copied Room ✓")
+                     ; Vdom.Effect.of_sync_fun (fun () ->
+                         match room_opt with
+                         | None -> ()
+                         | Some r -> Js_bridge.copy_to_clipboard r) ()
+                     ])
+               ]
+           ]
+
+       ; (* Primary actions *)
+         lobby_btn
+           ~id:"btn-signin"
+           ~label:"Sign in (Guest)"
+           ~disabled:is_signed_in
+           ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "signIn") ())
+
+       ; lobby_btn
+           ~id:"btn-quickmatch"
+           ~label:(if status_is_waiting then "Searching…" else "Quickmatch")
+           ~disabled:((not is_signed_in) || status_is_waiting)
+           ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "quickmatch") ())
+
+       ; (* Invite *)
+         card ~title:(Some "Invite a Friend")
+           [ input_box
+               ~id:"invite-to-uid-input"
+               ~value:invite_to_uid
+               ~placeholder:"Paste friend's UID…"
+               ~on_input:set_invite_to_uid
+           ; Vdom.Node.div ~attrs:[ attr "style" "height:8px;" ] []
+           ; lobby_btn
+               ~id:"btn-send-invite"
+               ~label:"Send Invite"
+               ~disabled:((not is_signed_in) || String.is_empty (String.strip invite_to_uid))
+               ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
+                 Js_bridge.call_env1 "createInvite" (String.strip invite_to_uid)) ())
+           ; Vdom.Node.div
+               ~attrs:[ attr "style" "margin-top:10px;color:#777;font-size:12px;line-height:1.4;" ]
+               [ Vdom.Node.text "Tip: open 2 browsers → both Sign in → copy UID → Send Invite → Accept." ]
+           ]
+
+       ; (* Incoming Invites *)
+         card ~title:(Some "Incoming Invites")
+           [ invites_view ]
+
+       ; (* Advanced toggle *)
+         lobby_btn
+           ~id:"btn-advanced"
+           ~label:(if advanced_open then "Advanced ▲" else "Advanced ▼")
+           ~disabled:false
+           ~on_click:(set_advanced_open (not advanced_open))
+
+       ; (* Advanced content: Create/Join Room *)
+         (if not advanced_open then Vdom.Node.none else
+            card ~title:(Some "Room (Share / Join)")
+              [ lobby_btn
+                  ~id:"btn-create-room"
+                  ~label:"Create Room (share code)"
+                  ~disabled:(not is_signed_in)
+                  ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "createGame") ())
+              ; Vdom.Node.div ~attrs:[ attr "style" "height:8px;" ] []
+              ; input_box
+                  ~id:"join-room-input"
+                  ~value:join_room_text
+                  ~placeholder:"Paste roomId to join…"
+                  ~on_input:set_join_room_text
+              ; Vdom.Node.div ~attrs:[ attr "style" "height:8px;" ] []
+              ; lobby_btn
+                  ~id:"btn-join-room"
+                  ~label:"Join Room"
+                  ~disabled:((not is_signed_in) || String.is_empty (String.strip join_room_text))
+                  ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
+                    Js_bridge.call_env1 "joinGame" (String.strip join_room_text)) ())
+              ])
+       ])
   in
 
   let game_page =

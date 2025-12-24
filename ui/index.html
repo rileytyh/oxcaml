@@ -4,21 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Backgammon</title>
+
     <link rel="stylesheet" href="style.css" />
     <link rel="icon" href="data:," />
 
     <style>
       body {
         margin: 0;
-        /* darker 007-ish green */
-        background: #0b1a0f;
+        background: #0b1a0f; /* darker 007-ish green */
       }
     </style>
 
     <!-- 1) Firebase init + expose bindings (NO sign-in here) -->
     <script type="module">
       import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-      import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+      import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
       import {
         getFirestore,
         collection,
@@ -52,7 +52,12 @@
         app,
         auth,
         db,
+
+        // auth
         signInAnonymously,
+        onAuthStateChanged,
+
+        // firestore
         collection,
         doc,
         getDocs,
@@ -70,8 +75,11 @@
       console.log("[firebase:init] bindings ready");
     </script>
 
-    <!-- 2) firebaseEnv shim -->
+    <!-- 2) firebaseEnv shim (NO auto sign-in) -->
     <script defer src="firebase_debug.js"></script>
+
+    <!-- 2.5) analytics (optional) -->
+    <script defer src="analytics.js"></script>
 
     <!-- 3) quickmatch + room sync -->
     <script defer src="quickmatch.js"></script>
@@ -81,8 +89,8 @@
   </head>
 
   <body>
-    <!-- Keep it (optional), but we do NOT use JS lobby rendering -->
-    <div id="lobby-root" style="display:none"></div>
+    <!-- (optional) keep hidden -->
+    <div id="lobby-root" style="display: none"></div>
 
     <!-- OCaml app mounts here -->
     <div id="app"></div>

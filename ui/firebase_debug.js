@@ -1,6 +1,7 @@
 // ui/firebase_debug.js
 // - Does NOT auto sign-in.
 // - Exposes window.firebaseEnv with signIn() that performs anonymous sign-in on demand.
+// - Also listens to auth state changes so refresh/reload stays consistent.
 
 (function () {
   const b = window.__firebaseBindings;
@@ -54,10 +55,10 @@
     status: "signed_out", // signed_out | signing_in | signed_in | waiting | matched | error
     sendState: null,
 
-    // IMPORTANT: default conservative (prevents any accidental reseed)
+    // conservative default (prevents accidental reseed)
     roomHasState: true,
 
-    // used to prevent echo loop after applying remote
+    // prevent echo loop after applying remote
     _suppressSendUntil: 0,
 
     // helper
@@ -93,6 +94,28 @@
 
   window.firebaseEnv = env;
   emitChanged();
+
+  // Keep env in sync on refresh/reload if already signed in
+  try {
+    if (typeof b.onAuthStateChanged === "function") {
+      b.onAuthStateChanged(b.auth, (user) => {
+        if (user) {
+          env.uid = user.uid;
+          env.ready = true;
+          if (env.status === "signed_out") env.status = "signed_in";
+        } else {
+          env.uid = null;
+          env.ready = false;
+          env.status = "signed_out";
+          env.roomId = null;
+          env.role = null;
+        }
+        emitChanged();
+      });
+    }
+  } catch (e) {
+    console.warn("[firebase_debug] onAuthStateChanged hook failed:", e);
+  }
 
   console.log("[firebase_debug] ready. (Not signed in yet)");
 })();
