@@ -70,7 +70,7 @@
         console.warn("[firebase] analytics unavailable:", e?.message || e);
       }
 
-      // Expose bindings for firebase_debug.js / quickmatch.js / analytics.js
+      // Expose bindings for firebase_debug.js / quickmatch.js / analytics.js / monetization.js
       window.__firebaseBindings = {
         app,
         auth,
@@ -151,6 +151,9 @@
 
     <!-- 3) quickmatch + room sync + invites -->
     <script defer src="quickmatch.js"></script>
+
+    <!-- 3.5) monetization (HW13) -->
+    <script defer src="monetization.js"></script>
 
     <!-- 4) js_of_ocaml output -->
     <script defer src="main.js"></script>

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Demo Checkout</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        background: #0b1a0f;
+        color: #eaeaea;
+      }
+      .card {
+        width: min(520px, 92vw);
+        background: rgba(0,0,0,0.45);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 16px;
+        padding: 18px 18px 14px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+      }
+      .title { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
+      .sub { opacity: 0.85; line-height: 1.4; margin-bottom: 14px; }
+      .row { display: flex; gap: 10px; }
+      button {
+        flex: 1;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.06);
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:hover { background: rgba(255,255,255,0.12); }
+      .hint { margin-top: 12px; opacity: 0.7; font-size: 12px; }
+      code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="title">Demo Checkout</div>
+      <div class="sub">
+        This is a <b>demo</b> payment page for HW13.<br/>
+        Clicking “Complete purchase” will redirect back with
+        <code>?payment=success&product=remove_ads</code>.
+      </div>
+
+      <div class="row">
+        <button id="complete">Complete purchase</button>
+        <button id="cancel">Cancel</button>
+      </div>
+
+      <div class="hint" id="where"></div>
+    </div>
+
+    <script>
+      const u = new URL(window.location.href);
+      const returnTo = u.searchParams.get("return_to") || "/";
+      const product = u.searchParams.get("product") || "remove_ads";
+
+      document.getElementById("where").textContent =
+        "Return to: " + returnTo;
+
+      document.getElementById("complete").onclick = () => {
+        const back = new URL(returnTo, window.location.origin);
+        back.searchParams.set("payment", "success");
+        back.searchParams.set("product", product);
+        window.location.href = back.toString();
+      };
+
+      document.getElementById("cancel").onclick = () => {
+        window.location.href = new URL(returnTo, window.location.origin).toString();
+      };
+    </script>
+  </body>
+</html>
