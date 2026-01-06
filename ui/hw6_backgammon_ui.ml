@@ -1095,7 +1095,7 @@ let input_box ~id ~value ~placeholder ~on_input =
     ()
 ;;
 
-let lobby_btn ~id ~label ~disabled ~on_click =
+let lobby_btn ~id ~label ~disabled ~on_click ~icon =
   let base_style =
     "width:100%;box-sizing:border-box;\
      padding:12px 14px;border-radius:16px;\
@@ -1111,6 +1111,14 @@ let lobby_btn ~id ~label ~disabled ~on_click =
      background:rgba(20,20,20,0.70);\
      color:#fff;font-weight:900;font-size:15px;opacity:0.45;cursor:not-allowed;"
   in
+  let button_content =
+    if String.is_empty icon then
+      [ Vdom.Node.text label ]
+    else
+      [ Vdom.Node.span ~attrs:[ Vdom.Attr.class_ "icon" ] [ Vdom.Node.text icon ]
+      ; Vdom.Node.text label
+      ]
+  in
   Vdom.Node.button
     ~attrs:
       ([ attr "data-testid" id
@@ -1119,7 +1127,7 @@ let lobby_btn ~id ~label ~disabled ~on_click =
        @ (if disabled
           then [ attr "disabled" "true" ]
           else [ Vdom.Attr.on_click (fun _ -> on_click) ]))
-    [ Vdom.Node.text label ]
+    button_content
 ;;
 
 let meta_line ~k ~v =
@@ -1959,11 +1967,13 @@ let app_component =
                      ~label:"Accept"
                      ~disabled:(not is_signed_in)
                      ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "acceptInvite" id) ())
+                     ~icon:""
                  ; lobby_btn
                      ~id:(sprintf "btn-decline-%s" id)
                      ~label:"Decline"
                      ~disabled:(not is_signed_in)
                      ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "declineInvite" id) ())
+                     ~icon:""
                  ]
              ]))
   in
@@ -2070,6 +2080,7 @@ let app_component =
          card ~title:(Some "Play")
          [
            lobby_btn
+             ~icon:"🔐"
              ~id:"btn-signin"
              ~label:(if is_signed_in then "Signed in ✓" else "Sign in (Guest)")
              ~disabled:is_signed_in
@@ -2077,6 +2088,7 @@ let app_component =
          ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
          ; lobby_btn
+             ~icon:"👥"
              ~id:"btn-local-passplay"
              ~label:"Play (Pass-and-Play)"
              ~disabled:false
@@ -2090,6 +2102,7 @@ let app_component =
          ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
          ; lobby_btn
+             ~icon:"🤖"
              ~id:"btn-local-ai"
              ~label:"Play vs AI"
              ~disabled:false
@@ -2103,6 +2116,7 @@ let app_component =
          ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
          ; lobby_btn
+             ~icon:"🎲"
              ~id:"btn-quickmatch"
              ~label:(if status_is_waiting then "Searching…" else "Quickmatch (Online)")
              ~disabled:((not is_signed_in) || status_is_waiting)
@@ -2113,6 +2127,7 @@ let app_component =
      ; (* ===================== PLAY WITH FRIENDS (collapsed) ===================== *)
        card ~title:(Some "Play with Friends")
          [ lobby_btn
+             ~icon:"🌐"
              ~id:"btn-friends-toggle"
              ~label:(if friends_open then "Play with Friends ▲" else "Play with Friends ▼")
              ~disabled:false
@@ -2137,6 +2152,7 @@ let app_component =
                     ~disabled:((not is_signed_in) || String.is_empty (String.strip invite_to_uid))
                     ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
                       Js_bridge.call_env1 "createInvite" (String.strip invite_to_uid)) ())
+                    ~icon:""
                 ; micro_help "Tip: open 2 browsers → both Sign in → copy UID → Send Invite → Accept."
 
                 ; divider
@@ -2149,6 +2165,7 @@ let app_component =
      ; (* ===================== MORE (collapsed) ===================== *)
        card ~title:(Some "More")
          [ lobby_btn
+             ~icon:"⋯"
              ~id:"btn-more-toggle"
              ~label:(if more_open then "More ▲" else "More ▼")
              ~disabled:false
@@ -2180,6 +2197,7 @@ let app_component =
                                   | None -> ()
                                   | Some u -> Js_bridge.copy_to_clipboard u) ()
                               ])
+                            ~icon:""
                         ; lobby_btn
                             ~id:"btn-copy-room"
                             ~label:"Copy Room"
@@ -2192,6 +2210,7 @@ let app_component =
                                   | None -> ()
                                   | Some r -> Js_bridge.copy_to_clipboard r) ()
                               ])
+                            ~icon:""
                         ]
                     ; (if is_signed_in then Vdom.Node.none else micro_help "Sign in (Guest) to use Quickmatch & invites.")
                     ]
@@ -2207,6 +2226,7 @@ let app_component =
                           [ set_toast (Some "Notifications enabled ✓")
                           ; Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "requestNotificationPermission") ()
                           ])
+                        ~icon:""
 
                     ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
@@ -2219,6 +2239,7 @@ let app_component =
                               Js_bridge.call_env1 "logEvent" "feedback_open";
                               Js_bridge.open_url "https://docs.google.com/forms/d/e/1FAIpQLSeOg1t5Ng9oew6LF54XPeFdred5GvhrI9fykMWoOQG-KqUAnQ/viewform?usp=header") ()
                           ])
+                        ~icon:""
                     ]
 
                 ; (* Advanced Room share/join *)
@@ -2229,6 +2250,7 @@ let app_component =
                         ~label:(if advanced_open then "Room (Share / Join) ▲" else "Room (Share / Join) ▼")
                         ~disabled:false
                         ~on_click:(set_advanced_open (not advanced_open))
+                        ~icon:""
 
                     ; (if not advanced_open then Vdom.Node.none else
                          Vdom.Node.div
@@ -2239,6 +2261,7 @@ let app_component =
                                ~label:"Create Room (share code)"
                                ~disabled:(not is_signed_in)
                                ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "createGame") ())
+                               ~icon:""
                            ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
                            ; input_box
                                ~id:"join-room-input"
@@ -2252,6 +2275,7 @@ let app_component =
                                ~disabled:((not is_signed_in) || String.is_empty (String.strip join_room_text))
                                ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
                                  Js_bridge.call_env1 "joinGame" (String.strip join_room_text)) ())
+                               ~icon:""
                            ])
                     ]
                 ])

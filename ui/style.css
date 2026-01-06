@@ -10,13 +10,50 @@ body {
   min-height: 100vh;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
 
-  /* 007-ish */
+  /* fallback */
   background: radial-gradient(1200px 600px at 50% 20%, #1f1f1f 0%, #0b0b0b 55%, #050505 100%);
   color: #eaeaea;
 
   display: flex;
   justify-content: center;
   padding-bottom: 56px;
+
+  /* 关键：避免横向抖动 & 给伪元素层一个稳定环境 */
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* 背景图层（图片 + 暗色遮罩） */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+
+  background:
+    linear-gradient(180deg, rgba(0,0,0,0.30), rgba(0,0,0,0.80)),
+    url("assets/picture.jpg");
+
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+
+  /* subtle 质感：别太大，不然看着糊 */
+  filter: blur(1.5px);
+  transform: scale(1.03);
+}
+
+/* vignette：让中间卡片更突出 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+
+  background: radial-gradient(circle at 50% 30%,
+    rgba(0,0,0,0.10) 0%,
+    rgba(0,0,0,0.55) 70%,
+    rgba(0,0,0,0.75) 100%);
 }
 
 /* page container */
@@ -227,4 +264,41 @@ svg.board {
 #ad-banner .ad-btn:hover,
 #ad-banner .ad-btn-secondary:hover {
   background: #1a1a1a;
+}
+
+/* =========================
+   Icon styling
+   ========================= */
+.icon {
+  display: inline-flex;
+  width: 18px;
+  justify-content: center;
+  margin-right: 8px;
+  opacity: 0.9;
+  transform: translateY(1px);
+}
+
+/* =========================
+   Lobby button styling
+   ========================= */
+.lobby-btn {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #f2f2f2;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  backdrop-filter: blur(10px);
+}
+
+.lobby-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(0,0,0,0.45);
+}
+
+.lobby-btn:active {
+  transform: translateY(0px);
 }
