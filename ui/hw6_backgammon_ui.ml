@@ -307,6 +307,14 @@ module Advanced_open = struct
   type t = bool [@@deriving sexp, compare, equal]
 end
 
+module Friends_open = struct
+  type t = bool [@@deriving sexp, compare, equal]
+end
+
+module More_open = struct
+  type t = bool [@@deriving sexp, compare, equal]
+end
+
 module Debug_dice = struct
   type t = string [@@deriving sexp, compare, equal]
 end
@@ -1078,8 +1086,10 @@ let input_box ~id ~value ~placeholder ~on_input =
       ; attr "value" value
       ; attr "placeholder" placeholder
       ; attr "style"
-          "width:280px;padding:10px 12px;border-radius:12px;border:1px solid #333;\
-           background:#0b0b0b;color:#fff;outline:none;"
+          "width:100%;box-sizing:border-box;\
+           padding:10px 12px;border-radius:14px;\
+           border:1px solid rgba(255,255,255,0.14);\
+           background:rgba(0,0,0,0.35);color:#fff;outline:none;"
       ; Vdom.Attr.on_input (fun _ s -> on_input s)
       ]
     ()
@@ -1087,14 +1097,19 @@ let input_box ~id ~value ~placeholder ~on_input =
 
 let lobby_btn ~id ~label ~disabled ~on_click =
   let base_style =
-    "width:280px;padding:12px 14px;border-radius:14px;border:1px solid #333;\
-     background:#111;color:#fff;font-weight:800;font-size:15px;cursor:pointer;\
-     box-shadow:0 8px 18px rgba(0,0,0,0.25);"
+    "width:100%;box-sizing:border-box;\
+     padding:12px 14px;border-radius:16px;\
+     border:1px solid rgba(255,255,255,0.14);\
+     background:linear-gradient(180deg, rgba(22,22,22,0.95), rgba(10,10,10,0.95));\
+     color:#fff;font-weight:900;font-size:15px;cursor:pointer;\
+     box-shadow:0 10px 24px rgba(0,0,0,0.35);"
   in
   let disabled_style =
-    "width:280px;padding:12px 14px;border-radius:14px;border:1px solid #333;\
-     background:#111;color:#fff;font-weight:800;font-size:15px;opacity:0.45;cursor:not-allowed;\
-     box-shadow:0 8px 18px rgba(0,0,0,0.25);"
+    "width:100%;box-sizing:border-box;\
+     padding:12px 14px;border-radius:16px;\
+     border:1px solid rgba(255,255,255,0.10);\
+     background:rgba(20,20,20,0.70);\
+     color:#fff;font-weight:900;font-size:15px;opacity:0.45;cursor:not-allowed;"
   in
   Vdom.Node.button
     ~attrs:
@@ -1141,6 +1156,12 @@ let app_component =
   let%sub debug_open, set_debug_open = Bonsai.state ~default_model:false (module Debug_open) in
   let%sub advanced_open, set_advanced_open =
     Bonsai.state ~default_model:false (module Advanced_open)
+  in
+  let%sub friends_open, set_friends_open =
+    Bonsai.state ~default_model:false (module Friends_open)
+  in
+  let%sub more_open, set_more_open =
+    Bonsai.state ~default_model:false (module More_open)
   in
   let%sub debug_dice, set_debug_dice = Bonsai.state ~default_model:"6,6" (module Debug_dice) in
   let%sub last_sent, set_last_sent = Bonsai.state ~default_model:None (module Last_sent) in
@@ -1490,6 +1511,10 @@ let app_component =
   and set_debug_open = set_debug_open
   and advanced_open = advanced_open
   and set_advanced_open = set_advanced_open
+  and friends_open = friends_open
+  and set_friends_open = set_friends_open
+  and more_open = more_open
+  and set_more_open = set_more_open
   and debug_dice = debug_dice
   and set_debug_dice = set_debug_dice
   and set_last_sent = set_last_sent
@@ -1944,17 +1969,29 @@ let app_component =
   in
 
   let card ?(title=None) children =
+    let header =
+      match title with
+      | None -> Vdom.Node.none
+      | Some t ->
+        Vdom.Node.div
+          ~attrs:
+            [ attr "style"
+                "font-size:12px;letter-spacing:0.14em;text-transform:uppercase;\
+                 color:#a7adb5;font-weight:900;margin-bottom:10px;"
+            ]
+          [ Vdom.Node.text t ]
+    in
     Vdom.Node.div
-      ~attrs:[
-        attr "style"
-          "width:320px;border:1px solid #333;border-radius:16px;background:#0d0d0d;padding:12px 14px;"
-      ]
-      (match title with
-       | None -> children
-       | Some t ->
-         Vdom.Node.div ~attrs:[ attr "style" "font-weight:900;margin-bottom:8px;" ]
-           [ Vdom.Node.text t ]
-         :: children)
+      ~attrs:
+        [ attr "style"
+            "width:360px;max-width:92vw;box-sizing:border-box;\
+             border:1px solid rgba(255,255,255,0.10);\
+             border-radius:18px;\
+             background:rgba(10,10,10,0.55);\
+             padding:14px 14px;\
+             box-shadow:0 16px 40px rgba(0,0,0,0.38);"
+        ]
+      (header :: children)
   in
 
   let ad_banner =
@@ -1963,10 +2000,11 @@ let app_component =
         [ attr "id" "ad-banner-ocaml"
         ; attr "data-testid" "ad-banner"
         ; attr "style"
-            "position:fixed;left:0;right:0;bottom:0;height:56px;\
-             background:#111;border-top:1px solid #333;\
+            "position:fixed;left:0;right:0;bottom:0;height:52px;\
+             background:rgba(10,10,10,0.88);border-top:1px solid rgba(255,255,255,0.10);\
              display:flex;align-items:center;justify-content:space-between;\
-             padding:0 14px;color:#bbb;font-weight:900;z-index:9999;"
+             padding:0 14px;color:rgba(255,255,255,0.72);font-weight:900;\
+             z-index:9999;backdrop-filter: blur(8px);"
         ]
       [ Vdom.Node.div
           ~attrs:[ attr "style" "display:flex;align-items:center;gap:10px;" ]
@@ -1986,168 +2024,241 @@ let app_component =
   in
 
   let lobby_card =
+    let divider =
+      Vdom.Node.div
+        ~attrs:
+          [ attr "style"
+              "height:1px;background:rgba(255,255,255,0.10);\
+               margin:12px 0;border-radius:999px;"
+          ]
+        []
+    in
+    let micro_help txt =
+      Vdom.Node.div
+        ~attrs:
+          [ attr "style"
+              "margin-top:10px;color:#8a8f98;font-size:12px;line-height:1.45;text-align:center;"
+          ]
+        [ Vdom.Node.text txt ]
+    in
+    let subhead txt =
+      Vdom.Node.div
+        ~attrs:[ attr "style" "font-size:12px;color:#b7bcc4;font-weight:900;margin-top:2px;margin-bottom:6px;" ]
+        [ Vdom.Node.text txt ]
+    in
     Vdom.Node.div
       ~attrs:
         [ attr "data-testid" "lobby"
         ; attr "style"
-            "min-height:80vh;display:flex;flex-direction:column;align-items:center;\
-             justify-content:center;gap:12px;padding:16px;"
+            "min-height:88vh;display:flex;flex-direction:column;align-items:center;\
+             justify-content:center;gap:14px;padding:22px 12px;width:100%;box-sizing:border-box;"
         ]
-      ([ Vdom.Node.div
-           ~attrs:[ attr "style" "font-size:44px;font-weight:900;margin-bottom:6px;" ]
+      ([
+         Vdom.Node.div
+           ~attrs:[ attr "style" "font-size:46px;font-weight:950;letter-spacing:-0.02em;margin-bottom:2px;" ]
            [ Vdom.Node.text "Backgammon" ]
        ; (match toast with
           | None -> Vdom.Node.none
           | Some t ->
             Vdom.Node.div
-              ~attrs:[ attr "style" "margin-top:-2px;margin-bottom:6px;color:#9fe870;font-weight:900;text-align:center;" ]
+              ~attrs:[ attr "style" "margin-top:-4px;margin-bottom:4px;color:#9fe870;font-weight:950;text-align:center;" ]
               [ Vdom.Node.text t ])
        ]
        @
-       [ (* Status + Copy *)
-         card
-           [ meta_line ~k:"Status" ~v:match_txt
-           ; meta_line ~k:"Your UID" ~v:uid_txt
-           ; meta_line ~k:"Room" ~v:room_txt
-           ; Vdom.Node.div
-               ~attrs:[ attr "style" "display:flex;gap:10px;justify-content:center;margin-top:10px;" ]
-               [ lobby_btn
-                   ~id:"btn-copy-uid"
-                   ~label:"Copy UID"
-                   ~disabled:(not is_signed_in)
-                   ~on_click:(Vdom.Effect.Many
-                     [ set_toast (Some "Copied UID ✓")
-                     ; Vdom.Effect.of_sync_fun (fun () ->
-                         Js_bridge.call_env1 "logEvent" "share_click";
-                         match uid_opt with
-                         | None -> ()
-                         | Some u -> Js_bridge.copy_to_clipboard u) ()
-                     ])
-               ; lobby_btn
-                   ~id:"btn-copy-room"
-                   ~label:"Copy Room"
-                   ~disabled:(not (Option.is_some room_opt))
-                   ~on_click:(Vdom.Effect.Many
-                     [ set_toast (Some "Copied Room ✓")
-                     ; Vdom.Effect.of_sync_fun (fun () ->
-                         Js_bridge.call_env1 "logEvent" "share_click";
-                         match room_opt with
-                         | None -> ()
-                         | Some r -> Js_bridge.copy_to_clipboard r) ()
-                     ])
-               ]
-           ]
+       [
+         (* ===================== PLAY ===================== *)
+         card ~title:(Some "Play")
+         [
+           lobby_btn
+             ~id:"btn-signin"
+             ~label:(if is_signed_in then "Signed in ✓" else "Sign in (Guest)")
+             ~disabled:is_signed_in
+             ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "signIn") ())
+         ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
-       ; (* Primary actions *)
-        lobby_btn
-          ~id:"btn-local-passplay"
-          ~label:"Play (Pass-and-Play)"
-          ~disabled:false
-          ~on_click:(Vdom.Effect.Many
-            [ set_mode Local_pass_and_play
-            ; set_selected None
-            ; set_toast (Some "Local pass-and-play ✓")
-            ; do_reset_local
-            ])
+         ; lobby_btn
+             ~id:"btn-local-passplay"
+             ~label:"Play (Pass-and-Play)"
+             ~disabled:false
+             ~on_click:(Vdom.Effect.Many
+               [ set_mode Local_pass_and_play
+               ; set_selected None
+               ; set_toast (Some "Local pass-and-play ✓")
+               ; do_reset_local
+               ])
 
-      ; lobby_btn
-          ~id:"btn-local-ai"
-          ~label:"Play vs AI"
-          ~disabled:false
-          ~on_click:(Vdom.Effect.Many
-            [ set_mode Local_vs_ai
-            ; set_selected None
-            ; set_toast (Some "Local vs AI ✓ (you are White)")
-            ; do_reset_local
-            ])
+         ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
-       ; lobby_btn
-           ~id:"btn-signin"
-           ~label:"Sign in (Guest)"
-           ~disabled:is_signed_in
-           ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "signIn") ())
+         ; lobby_btn
+             ~id:"btn-local-ai"
+             ~label:"Play vs AI"
+             ~disabled:false
+             ~on_click:(Vdom.Effect.Many
+               [ set_mode Local_vs_ai
+               ; set_selected None
+               ; set_toast (Some "Local vs AI ✓ (you are White)")
+               ; do_reset_local
+               ])
 
-       ; lobby_btn
-           ~id:"btn-quickmatch"
-           ~label:(if status_is_waiting then "Searching…" else "Quickmatch")
-           ~disabled:((not is_signed_in) || status_is_waiting)
-           ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "quickmatch") ())
+         ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
 
-       ; (* Invite *)
-         card ~title:(Some "Invite a Friend")
-           [ input_box
-               ~id:"invite-to-uid-input"
-               ~value:invite_to_uid
-               ~placeholder:"Paste friend's UID…"
-               ~on_input:set_invite_to_uid
-           ; Vdom.Node.div ~attrs:[ attr "style" "height:8px;" ] []
-           ; lobby_btn
-               ~id:"btn-send-invite"
-               ~label:"Send Invite"
-               ~disabled:((not is_signed_in) || String.is_empty (String.strip invite_to_uid))
-               ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
-                 Js_bridge.call_env1 "createInvite" (String.strip invite_to_uid)) ())
-           ; Vdom.Node.div
-               ~attrs:[ attr "style" "margin-top:10px;color:#777;font-size:12px;line-height:1.4;" ]
-               [ Vdom.Node.text "Tip: open 2 browsers → both Sign in → copy UID → Send Invite → Accept." ]
-           ]
+         ; lobby_btn
+             ~id:"btn-quickmatch"
+             ~label:(if status_is_waiting then "Searching…" else "Quickmatch (Online)")
+             ~disabled:((not is_signed_in) || status_is_waiting)
+             ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "quickmatch") ())
+         ; micro_help "Local modes work instantly. Online modes require Guest sign-in."
+         ]
 
-       ; (* Incoming Invites *)
-         card ~title:(Some "Incoming Invites")
-           [ invites_view ]
+     ; (* ===================== PLAY WITH FRIENDS (collapsed) ===================== *)
+       card ~title:(Some "Play with Friends")
+         [ lobby_btn
+             ~id:"btn-friends-toggle"
+             ~label:(if friends_open then "Play with Friends ▲" else "Play with Friends ▼")
+             ~disabled:false
+             ~on_click:(set_friends_open (not friends_open))
+         ; (if not friends_open then
+              Vdom.Node.none
+            else
+              Vdom.Node.div
+                ~attrs:[ attr "style" "margin-top:12px;" ]
+                [
+                  (* 原来的 friends 内容直接搬进来：Invite + Incoming *)
+                  subhead "Invite a Friend"
+                ; input_box
+                    ~id:"invite-to-uid-input"
+                    ~value:invite_to_uid
+                    ~placeholder:"Paste friend's UID…"
+                    ~on_input:set_invite_to_uid
+                ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
+                ; lobby_btn
+                    ~id:"btn-send-invite"
+                    ~label:"Send Invite"
+                    ~disabled:((not is_signed_in) || String.is_empty (String.strip invite_to_uid))
+                    ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
+                      Js_bridge.call_env1 "createInvite" (String.strip invite_to_uid)) ())
+                ; micro_help "Tip: open 2 browsers → both Sign in → copy UID → Send Invite → Accept."
 
-       ; (* Enable Notifications *)
-         lobby_btn
-           ~id:"btn-notify"
-           ~label:"Enable Notifications"
-           ~disabled:(not is_signed_in)
-           ~on_click:(Vdom.Effect.Many
-             [ set_toast (Some "Notifications enabled ✓")
-             ; Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "requestNotificationPermission") ()
-             ])
+                ; divider
 
-       ; (* Feedback *)
-         lobby_btn
-           ~id:"btn-feedback"
-           ~label:"Feedback"
-           ~disabled:false
-           ~on_click:(Vdom.Effect.Many
-             [ Vdom.Effect.of_sync_fun (fun () ->
-                 Js_bridge.call_env1 "logEvent" "feedback_open";
-                 Js_bridge.open_url "https://docs.google.com/forms/d/e/1FAIpQLSeOg1t5Ng9oew6LF54XPeFdred5GvhrI9fykMWoOQG-KqUAnQ/viewform?usp=header") ()
-             ])
+                ; subhead "Incoming Invites"
+                ; invites_view
+                ])
+         ]
 
-       ; (* Advanced toggle *)
-         lobby_btn
-           ~id:"btn-advanced"
-           ~label:(if advanced_open then "Advanced ▲" else "Advanced ▼")
-           ~disabled:false
-           ~on_click:(set_advanced_open (not advanced_open))
+     ; (* ===================== MORE (collapsed) ===================== *)
+       card ~title:(Some "More")
+         [ lobby_btn
+             ~id:"btn-more-toggle"
+             ~label:(if more_open then "More ▲" else "More ▼")
+             ~disabled:false
+             ~on_click:(set_more_open (not more_open))
+         ; (if not more_open then
+              Vdom.Node.none
+            else
+              Vdom.Node.div
+                ~attrs:[ attr "style" "margin-top:12px;display:flex;flex-direction:column;gap:12px;" ]
+                [
+                  (* Status moved here *)
+                  card ~title:(Some "Status")
+                    [
+                      meta_line ~k:"Online" ~v:match_txt
+                    ; meta_line ~k:"Your UID" ~v:uid_txt
+                    ; meta_line ~k:"Room" ~v:room_txt
+                    ; Vdom.Node.div
+                        ~attrs:[ attr "style" "display:flex;gap:10px;justify-content:center;margin-top:10px;" ]
+                        [
+                          lobby_btn
+                            ~id:"btn-copy-uid"
+                            ~label:"Copy UID"
+                            ~disabled:(not is_signed_in)
+                            ~on_click:(Vdom.Effect.Many
+                              [ set_toast (Some "Copied UID ✓")
+                              ; Vdom.Effect.of_sync_fun (fun () ->
+                                  Js_bridge.call_env1 "logEvent" "share_click";
+                                  match uid_opt with
+                                  | None -> ()
+                                  | Some u -> Js_bridge.copy_to_clipboard u) ()
+                              ])
+                        ; lobby_btn
+                            ~id:"btn-copy-room"
+                            ~label:"Copy Room"
+                            ~disabled:(not (Option.is_some room_opt))
+                            ~on_click:(Vdom.Effect.Many
+                              [ set_toast (Some "Copied Room ✓")
+                              ; Vdom.Effect.of_sync_fun (fun () ->
+                                  Js_bridge.call_env1 "logEvent" "share_click";
+                                  match room_opt with
+                                  | None -> ()
+                                  | Some r -> Js_bridge.copy_to_clipboard r) ()
+                              ])
+                        ]
+                    ; (if is_signed_in then Vdom.Node.none else micro_help "Sign in (Guest) to use Quickmatch & invites.")
+                    ]
 
-       ; (* Advanced content: Create/Join Room *)
-         (if not advanced_open then Vdom.Node.none else
-            card ~title:(Some "Room (Share / Join)")
-              [ lobby_btn
-                  ~id:"btn-create-room"
-                  ~label:"Create Room (share code)"
-                  ~disabled:(not is_signed_in)
-                  ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "createGame") ())
-              ; Vdom.Node.div ~attrs:[ attr "style" "height:8px;" ] []
-              ; input_box
-                  ~id:"join-room-input"
-                  ~value:join_room_text
-                  ~placeholder:"Paste roomId to join…"
-                  ~on_input:set_join_room_text
-              ; Vdom.Node.div ~attrs:[ attr "style" "height:8px;" ] []
-              ; lobby_btn
-                  ~id:"btn-join-room"
-                  ~label:"Join Room"
-                  ~disabled:((not is_signed_in) || String.is_empty (String.strip join_room_text))
-                  ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
-                    Js_bridge.call_env1 "joinGame" (String.strip join_room_text)) ())
-              ])
-       ; ad_banner
-       ])
+                ; (* Notifications + Feedback *)
+                  card ~title:(Some "Account")
+                    [
+                      lobby_btn
+                        ~id:"btn-notify"
+                        ~label:"Enable Notifications"
+                        ~disabled:(not is_signed_in)
+                        ~on_click:(Vdom.Effect.Many
+                          [ set_toast (Some "Notifications enabled ✓")
+                          ; Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "requestNotificationPermission") ()
+                          ])
+
+                    ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
+
+                    ; lobby_btn
+                        ~id:"btn-feedback"
+                        ~label:"Feedback"
+                        ~disabled:false
+                        ~on_click:(Vdom.Effect.Many
+                          [ Vdom.Effect.of_sync_fun (fun () ->
+                              Js_bridge.call_env1 "logEvent" "feedback_open";
+                              Js_bridge.open_url "https://docs.google.com/forms/d/e/1FAIpQLSeOg1t5Ng9oew6LF54XPeFdred5GvhrI9fykMWoOQG-KqUAnQ/viewform?usp=header") ()
+                          ])
+                    ]
+
+                ; (* Advanced Room share/join *)
+                  card ~title:(Some "Advanced")
+                    [
+                      lobby_btn
+                        ~id:"btn-advanced"
+                        ~label:(if advanced_open then "Room (Share / Join) ▲" else "Room (Share / Join) ▼")
+                        ~disabled:false
+                        ~on_click:(set_advanced_open (not advanced_open))
+
+                    ; (if not advanced_open then Vdom.Node.none else
+                         Vdom.Node.div
+                           ~attrs:[ attr "style" "margin-top:12px;" ]
+                           [
+                             lobby_btn
+                               ~id:"btn-create-room"
+                               ~label:"Create Room (share code)"
+                               ~disabled:(not is_signed_in)
+                               ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "createGame") ())
+                           ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
+                           ; input_box
+                               ~id:"join-room-input"
+                               ~value:join_room_text
+                               ~placeholder:"Paste roomId to join…"
+                               ~on_input:set_join_room_text
+                           ; Vdom.Node.div ~attrs:[ attr "style" "height:10px;" ] []
+                           ; lobby_btn
+                               ~id:"btn-join-room"
+                               ~label:"Join Room"
+                               ~disabled:((not is_signed_in) || String.is_empty (String.strip join_room_text))
+                               ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
+                                 Js_bridge.call_env1 "joinGame" (String.strip join_room_text)) ())
+                           ])
+                    ]
+                ])
+         ]
+
+     ; ad_banner
+     ])
   in
 
   let game_page =
