@@ -66,72 +66,54 @@
     } catch {}
   }
 
-  function ensureBanner() {
-    let el = document.getElementById("hw13-ad-banner");
-    if (el) return el;
-
-    el = document.createElement("div");
-    el.id = "hw13-ad-banner";
-    el.style.position = "fixed";
-    el.style.left = "0";
-    el.style.right = "0";
-    el.style.bottom = "0";
-    el.style.zIndex = "9999";
-    el.style.display = "flex";
-    el.style.alignItems = "center";
-    el.style.justifyContent = "space-between";
-    el.style.gap = "12px";
-    el.style.padding = "12px 14px";
-    el.style.background = "rgba(0,0,0,0.80)";
-    el.style.borderTop = "1px solid rgba(255,255,255,0.10)";
-    el.style.color = "#eaeaea";
-    el.style.backdropFilter = "blur(6px)";
-
-    const left = document.createElement("div");
-    left.innerHTML = `<div style="font-weight:800">Ad</div>
-      <div style="opacity:.85;font-size:12px">This is a demo ad banner (HW13). Remove it by purchasing “Remove Ads”.</div>`;
-
-    const right = document.createElement("div");
-    right.style.display = "flex";
-    right.style.gap = "10px";
-
-    const buy = document.createElement("button");
-    buy.id = "hw13-buy";
-    buy.textContent = "Remove Ads ($2)";
-    buy.style.padding = "8px 12px";
-    buy.style.borderRadius = "12px";
-    buy.style.border = "1px solid rgba(255,255,255,0.14)";
-    buy.style.background = "rgba(255,255,255,0.06)";
-    buy.style.color = "#fff";
-    buy.style.fontWeight = "800";
-    buy.style.cursor = "pointer";
-
-    const hide = document.createElement("button");
-    hide.textContent = "Hide";
-    hide.style.padding = "8px 12px";
-    hide.style.borderRadius = "12px";
-    hide.style.border = "1px solid rgba(255,255,255,0.14)";
-    hide.style.background = "rgba(255,255,255,0.04)";
-    hide.style.color = "#fff";
-    hide.style.cursor = "pointer";
-
-    hide.onclick = () => {
-      el.style.display = "none";
-    };
-
-    right.appendChild(buy);
-    right.appendChild(hide);
-
-    el.appendChild(left);
-    el.appendChild(right);
-
-    document.body.appendChild(el);
-    return el;
+  function getBannerEl() {
+    return document.getElementById("ad-banner-ocaml");
   }
 
-  function setBannerVisible(visible) {
-    const el = ensureBanner();
-    el.style.display = visible ? "flex" : "none";
+  async function waitBannerEl(timeoutMs = 12000) {
+    const start = Date.now();
+    while (true) {
+      const el = getBannerEl();
+      if (el) return el;
+      if (Date.now() - start > timeoutMs) return null;
+      await sleep(50);
+    }
+  }
+
+  function setBannerVisible(show) {
+    const el = getBannerEl();
+    if (!el) return;
+    el.style.display = show ? "flex" : "none";
+  }
+
+  function installDelegation(env) {
+    if (window.__hw13Delegated) return;
+    window.__hw13Delegated = true;
+
+    const goPay = (e) => {
+      // 只响应 banner 内的点击
+      const banner = e.target && e.target.closest && e.target.closest("#ad-banner-ocaml");
+      if (!banner) return;
+
+      // 点购买按钮 或 点击 banner 任意区域：去支付
+      const buyBtn = e.target.closest('[data-action="remove-ads"]');
+      const clickedInsideBanner = !!banner;
+      if (buyBtn || clickedInsideBanner) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!env || !env.uid) {
+          alert('Please click "Sign in (Guest)" first, then purchase again.');
+          return;
+        }
+        try {
+          env.logEventWith && env.logEventWith("purchase_click", { product: "remove_ads", via: "banner" });
+        } catch {}
+        window.location.href = STRIPE_PAYMENT_LINK;
+      }
+    };
+
+    // 用捕获阶段，避免被别的层拦截
+    document.addEventListener("click", goPay, true);
   }
 
   async function loadPurchases(env) {
@@ -161,33 +143,40 @@
     }
   }
 
-  function goToStripeCheckout(env) {
-    // 强制要求先有 uid，不然回调后无法把购买写入 Firestore
-    if (!env.uid) {
-      alert("Please click “Sign in (Guest)” first, then purchase again.");
-      try {
-        env.logEventWith &&
-          env.logEventWith("purchase_blocked_no_uid", { product: "remove_ads" });
-      } catch {}
-      return;
-    }
-
-    try {
-      env.logEventWith &&
-        env.logEventWith("purchase_start", { product: "remove_ads", via: "stripe_link" });
-    } catch {}
-
-    window.location.href = STRIPE_PAYMENT_LINK;
-  }
-
   async function main() {
     const env = await waitEnv();
 
-    // Always ensure banner exists (we'll decide show/hide later)
-    const banner = ensureBanner();
+    // Robustly show banner even if OCaml mounts it later (first render race)
+    setBannerVisible(true);
 
-    // Buy button -> Stripe link
-    banner.querySelector("#hw13-buy").onclick = () => goToStripeCheckout(env);
+    // 1) Try wait a bit
+    await waitBannerEl(12000);
+    setBannerVisible(true);
+
+    // 2) MutationObserver fallback: if banner is added later, force show
+    try {
+      if (!window.__hw13BannerObserver) {
+        window.__hw13BannerObserver = true;
+        const obs = new MutationObserver(() => {
+          const el = getBannerEl();
+          if (el) setBannerVisible(true);
+        });
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+      }
+    } catch {}
+
+    // Install event delegation (only once)
+    installDelegation(env);
+
+    // 3) Poll a few times on first load (extra safety)
+    try {
+      let tries = 0;
+      const t = setInterval(() => {
+        tries++;
+        setBannerVisible(true);
+        if (getBannerEl() || tries > 20) clearInterval(t); // ~10s
+      }, 500);
+    } catch {}
 
     // Wait for uid a bit; if user doesn't sign in, still show banner
     let gotUid = false;

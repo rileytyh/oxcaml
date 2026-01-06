@@ -240,6 +240,24 @@ module Js_bridge = struct
 end
 
 (* =============================================================================
+   Async helpers: run/delay Bonsai effects from JS timers
+   ============================================================================= *)
+
+let run_effect_now (eff : unit Vdom.Effect.t) : unit =
+  let dummy_ev : #Dom_html.event Js.t = Obj.magic (Js.Unsafe.obj [||]) in
+  ignore (Bonsai_web.Effect.Expert.handle dummy_ev eff : unit)
+;;
+
+let delay_effect ~(ms : int) (eff : unit Vdom.Effect.t) : unit Vdom.Effect.t =
+  Vdom.Effect.of_sync_fun
+    (fun () ->
+      let cb = Js.wrap_callback (fun () -> run_effect_now eff) in
+      ignore (Js.Unsafe.meth_call Dom_html.window "setTimeout" [| Js.Unsafe.inject cb; Js.Unsafe.inject (Js.number_of_float (float_of_int ms)) |]);
+      ())
+    ()
+;;
+
+(* =============================================================================
    Debug visibility via URL: ?debug=1
    ============================================================================= *)
 
@@ -321,6 +339,11 @@ module Text = struct
   type t = string [@@deriving sexp, compare, equal]
 end
 
+module Invite_snapshot = struct
+  (* (invite_id, from_uid, room_id) *)
+  type t = (string * string * string) list [@@deriving sexp, compare, equal]
+end
+
 (* (A) payload module *)
 module Push_payload = struct
   type t =
@@ -336,6 +359,16 @@ type phase =
   | Select_destination
   | Winner
 [@@deriving sexp, compare, equal]
+
+type play_mode =
+  | Online_firebase
+  | Local_pass_and_play
+  | Local_vs_ai
+[@@deriving sexp, compare, equal]
+
+module Play_mode = struct
+  type t = play_mode [@@deriving sexp, compare, equal]
+end
 
 let phase_of ~(st : Game_state.t) ~(selected : Location.t option) : phase =
   match st.decision with
@@ -1098,6 +1131,9 @@ let app_component =
   in
 
   let%sub st, set_st = Bonsai.state ~default_model:initial_state (module Game_state) in
+  let%sub mode, set_mode =
+    Bonsai.state ~default_model:Online_firebase (module Play_mode)
+  in
   let%sub game_end_logged, set_game_end_logged =
     Bonsai.state ~default_model:false (module Bool)
   in
@@ -1125,6 +1161,11 @@ let app_component =
   (* small toast message for UI feedback (e.g., copied) *)
   let%sub toast, set_toast = Bonsai.state ~default_model:None (module Opt_string) in
 
+  (* incoming invites snapshot (so lobby can refresh reliably) *)
+  let%sub incoming_invites, set_incoming_invites =
+    Bonsai.state ~default_model:[] (module Invite_snapshot)
+  in
+
   (* have we applied at least one remote state? *)
   let%sub seen_remote, set_seen_remote =
     Bonsai.state ~default_model:false (module Seen_remote)
@@ -1144,6 +1185,7 @@ let app_component =
          and set_env_status = set_env_status
          and set_env_role = set_env_role
          and set_env_room_has_state = set_env_room_has_state
+         and set_incoming_invites = set_incoming_invites
          in
          let initial_eff =
            Vdom.Effect.Many
@@ -1152,6 +1194,12 @@ let app_component =
              ; set_env_status (Js_bridge.get_firebase_status ())
              ; set_env_role (Js_bridge.get_firebase_role ())
              ; set_env_room_has_state (Js_bridge.get_firebase_room_has_state ())
+             ; set_incoming_invites
+                 (Js_bridge.get_incoming_invites ()
+                  |> List.map ~f:(fun inv ->
+                       ( inv.id
+                       , Option.value inv.from_uid ~default:""
+                       , Option.value inv.room_id ~default:"" )))
              ]
          in
          let attach () =
@@ -1165,6 +1213,12 @@ let app_component =
                    ; set_env_status (Js_bridge.get_firebase_status ())
                    ; set_env_role (Js_bridge.get_firebase_role ())
                    ; set_env_room_has_state (Js_bridge.get_firebase_room_has_state ())
+                   ; set_incoming_invites
+                       (Js_bridge.get_incoming_invites ()
+                        |> List.map ~f:(fun inv ->
+                             ( inv.id
+                             , Option.value inv.from_uid ~default:""
+                             , Option.value inv.room_id ~default:"" )))
                    ]
                in
                ignore (Bonsai_web.Effect.Expert.handle ev eff : unit))
@@ -1195,6 +1249,30 @@ let app_component =
             | Some _ ->
               Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env0 "listenIncomingInvites") ()))
    in
+
+  (* Poll invites as a fallback in case JS doesn't dispatch events on invite changes *)
+  let%sub () =
+    Bonsai.Edge.lifecycle
+      ~on_activate:
+        (let%map set_incoming_invites = set_incoming_invites in
+         Vdom.Effect.of_sync_fun
+           (fun () ->
+             let cb =
+               Js.wrap_callback (fun () ->
+                 let snap =
+                   Js_bridge.get_incoming_invites ()
+                   |> List.map ~f:(fun inv ->
+                        ( inv.id
+                        , Option.value inv.from_uid ~default:""
+                        , Option.value inv.room_id ~default:"" ))
+                 in
+                 run_effect_now (set_incoming_invites snap))
+             in
+             ignore (Js.Unsafe.meth_call Dom_html.window "setInterval" [| Js.Unsafe.inject cb; Js.Unsafe.inject (Js.number_of_float 800.) |]);
+             Js.Unsafe.set Dom_html.window "__ocamlInvitesPoll" cb)
+           ())
+      ()
+  in
 
   (* Expose window.ocamlRemote.set_state + request_send once on mount *)
   let%sub () =
@@ -1327,8 +1405,85 @@ let app_component =
            | _ -> Vdom.Effect.Ignore)
   in
 
+  (* Local vs AI: whenever state changes and it's AI's turn, do one AI move *)
+  let%sub () =
+    Bonsai.Edge.on_change
+      (module Game_state)
+      (let%map st = st in st)
+      ~callback:
+        (let%map mode = mode
+         and set_st = set_st
+         and set_selected = set_selected
+         in
+         fun (st_now : Game_state.t) ->
+           match mode with
+           | Local_vs_ai ->
+             (match st_now.decision with
+              | Decision.Winner _ -> Vdom.Effect.Ignore
+              | Decision.In_progress { whose_turn; dice_left } ->
+                if not (Player_kind.equal whose_turn Player_kind.Black) then Vdom.Effect.Ignore
+                else if List.is_empty dice_left then
+                  let dice = roll_dice_list () in
+                  let st' =
+                    { st_now with
+                      decision = Decision.In_progress { whose_turn = Player_kind.Black; dice_left = dice }
+                    }
+                  in
+                  Vdom.Effect.Many
+                    [ set_selected None
+                    ; delay_effect ~ms:1400 (Vdom.Effect.Many [ set_st st'; set_selected None ])
+                    ]
+                else
+                  (* 找一个随机合法 move（source + dest） *)
+                  let p = Player_kind.Black in
+                  let srcs = valid_sources ~st:st_now ~p ~dice_left in
+                  if List.is_empty srcs then
+                    (* 无路可走：直接结束回合 *)
+                    let st' =
+                      { st_now with
+                        decision = Decision.In_progress { whose_turn = Player_kind.White; dice_left = [] }
+                      }
+                    in
+                    Vdom.Effect.Many
+                      [ set_selected None
+                      ; delay_effect ~ms:1200 (Vdom.Effect.Many [ set_st st'; set_selected None ])
+                      ]
+                  else
+                    (match List.random_element srcs with
+                     | None -> Vdom.Effect.Ignore
+                     | Some src ->
+                       let dests = valid_destinations_for_source ~st:st_now ~p ~dice_left ~source:src in
+                       (match List.random_element dests with
+                        | None -> Vdom.Effect.Ignore
+                        | Some dest ->
+                          (* 选对应 die *)
+                          (match choose_die_for_dest ~st:st_now ~p ~dice_left ~source:src ~dest with
+                           | None -> Vdom.Effect.Ignore
+                           | Some die ->
+                             let move = { Move.from_ = src; die = clamp_die die } in
+                             (match Game_state.make_move st_now move with
+                              | Error _ -> Vdom.Effect.Ignore
+                              | Ok st' ->
+                                let sexp = Sexplib.Sexp.to_string (Game_state.sexp_of_t st') in
+                                Js_bridge.set_latest_state sexp;
+                                Vdom.Effect.Many
+                                  [ (* 先让 UI 高亮 AI 选中的 source，给你"过程感" *)
+                                    set_selected (Some src)
+                                  ; delay_effect ~ms:1600
+                                      (Vdom.Effect.Many
+                                         [ set_st st'
+                                         ; set_selected None
+                                         ; Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "logEvent" "ai_move") ()
+                                         ])
+                                  ])))))
+           | Online_firebase | Local_pass_and_play -> Vdom.Effect.Ignore)
+  in
+
+
   let%arr st = st
   and set_st = set_st
+  and mode = mode
+  and set_mode = set_mode
   and selected = selected
   and set_selected = set_selected
   and debug_open = debug_open
@@ -1349,6 +1504,8 @@ let app_component =
   and toast = toast
   and set_toast = set_toast
   and set_game_end_logged = set_game_end_logged
+  and incoming_invites = incoming_invites
+  and env_room_has_state = env_room_has_state
   in
 
   let p_opt, dice_left = whose_turn_and_dice st in
@@ -1374,9 +1531,19 @@ let app_component =
   in
 
   let can_interact =
-    match my_role_opt, p_opt with
-    | Some mine, Some turn -> Player_kind.equal mine turn
-    | _ -> false
+    match mode with
+    | Online_firebase ->
+      (match my_role_opt, p_opt with
+       | Some mine, Some turn -> Player_kind.equal mine turn
+       | _ -> false)
+    | Local_pass_and_play ->
+      (* 本地模式：总是允许点击（当前回合的人操作） *)
+      Option.is_some p_opt
+    | Local_vs_ai ->
+      (* 你固定扮演 White *)
+      (match p_opt with
+       | Some Player_kind.White -> true
+       | _ -> false)
   in
 
   let valid_srcs =
@@ -1396,8 +1563,20 @@ let app_component =
 
   let has_any_move = not (List.is_empty valid_srcs) in
 
+  let can_new_game =
+    match mode with
+    | Online_firebase ->
+      is_matched
+      && Option.value_map my_role_opt ~default:false ~f:(Player_kind.equal Player_kind.White)
+      && (match env_room_has_state with
+          | Some false -> true
+          | _ -> false)
+    | Local_pass_and_play
+    | Local_vs_ai -> true
+  in
+
   let do_new_game =
-    if not can_interact then Vdom.Effect.Ignore
+    if not can_new_game then Vdom.Effect.Ignore
     else
       match Game_state.create () with
       | Error _ -> Vdom.Effect.Ignore
@@ -1407,7 +1586,14 @@ let app_component =
         in
         let sexp = Sexplib.Sexp.to_string (Game_state.sexp_of_t st1) in
         Js_bridge.set_latest_state sexp;
-        Js_bridge.send_state sexp;
+
+        let send_online =
+          match mode with
+          | Online_firebase -> true
+          | Local_pass_and_play | Local_vs_ai -> false
+        in
+        if send_online then Js_bridge.send_state sexp;
+
         Vdom.Effect.Many
           [ set_last_sent (Some sexp)
           ; set_st st1
@@ -1448,6 +1634,16 @@ let app_component =
             }
           in
           Vdom.Effect.Many [ set_st st'; set_selected None ]
+  in
+
+  let do_reset_local =
+    match Game_state.create () with
+    | Error _ -> Vdom.Effect.Ignore
+    | Ok st0 ->
+      let st1 =
+        { st0 with decision = Decision.In_progress { whose_turn = Player_kind.White; dice_left = [] } }
+      in
+      Vdom.Effect.Many [ set_st st1; set_selected None; set_game_end_logged false ]
   in
 
   let do_apply_debug_dice =
@@ -1715,38 +1911,34 @@ let app_component =
 
   (* -------------------- LOBBY (with Invite + Copy/Join) -------------------- *)
 
-  let incoming =
-    Js_bridge.get_incoming_invites ()
-  in
-
   let invites_view =
-    if List.is_empty incoming then
+    if List.is_empty incoming_invites then
       Vdom.Node.div
         ~attrs:[ attr "style" "color:#777;font-size:13px;text-align:center;margin-top:6px;" ]
         [ Vdom.Node.text "No incoming invites." ]
     else
       Vdom.Node.div
         ~attrs:[ attr "style" "display:flex;flex-direction:column;gap:10px;margin-top:6px;" ]
-        (List.map incoming ~f:(fun inv ->
-           let from_txt = Option.value_map inv.from_uid ~default:"—" ~f:short_id in
-           let room_txt2 = Option.value_map inv.room_id ~default:"—" ~f:short_id in
+        (List.map incoming_invites ~f:(fun (id, from_uid, room_id) ->
+           let from_txt = if String.is_empty from_uid then "—" else short_id from_uid in
+           let room_txt2 = if String.is_empty room_id then "—" else short_id room_id in
            Vdom.Node.div
              ~attrs:[ attr "style" "border:1px solid #333;border-radius:14px;background:#0f0f0f;padding:10px 12px;" ]
              [ meta_line ~k:"From UID" ~v:from_txt
              ; meta_line ~k:"Room" ~v:room_txt2
-             ; meta_line ~k:"Invite ID" ~v:(short_id inv.id)
+             ; meta_line ~k:"Invite ID" ~v:(short_id id)
              ; Vdom.Node.div
                  ~attrs:[ attr "style" "display:flex;gap:10px;justify-content:center;margin-top:10px;" ]
                  [ lobby_btn
-                     ~id:(sprintf "btn-accept-%s" inv.id)
+                     ~id:(sprintf "btn-accept-%s" id)
                      ~label:"Accept"
                      ~disabled:(not is_signed_in)
-                     ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "acceptInvite" inv.id) ())
+                     ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "acceptInvite" id) ())
                  ; lobby_btn
-                     ~id:(sprintf "btn-decline-%s" inv.id)
+                     ~id:(sprintf "btn-decline-%s" id)
                      ~label:"Decline"
                      ~disabled:(not is_signed_in)
-                     ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "declineInvite" inv.id) ())
+                     ~on_click:(Vdom.Effect.of_sync_fun (fun () -> Js_bridge.call_env1 "declineInvite" id) ())
                  ]
              ]))
   in
@@ -1763,6 +1955,34 @@ let app_component =
          Vdom.Node.div ~attrs:[ attr "style" "font-weight:900;margin-bottom:8px;" ]
            [ Vdom.Node.text t ]
          :: children)
+  in
+
+  let ad_banner =
+    Vdom.Node.div
+      ~attrs:
+        [ attr "id" "ad-banner-ocaml"
+        ; attr "data-testid" "ad-banner"
+        ; attr "style"
+            "position:fixed;left:0;right:0;bottom:0;height:56px;\
+             background:#111;border-top:1px solid #333;\
+             display:flex;align-items:center;justify-content:space-between;\
+             padding:0 14px;color:#bbb;font-weight:900;z-index:9999;"
+        ]
+      [ Vdom.Node.div
+          ~attrs:[ attr "style" "display:flex;align-items:center;gap:10px;" ]
+          [ Vdom.Node.span ~attrs:[ attr "style" "opacity:0.9;" ] [ Vdom.Node.text "Ad" ]
+          ; Vdom.Node.span ~attrs:[ attr "style" "font-weight:700;opacity:0.7;font-size:12px;" ]
+              [ Vdom.Node.text "demo" ]
+          ]
+      ; Vdom.Node.button
+          ~attrs:
+            [ attr "data-action" "remove-ads"
+            ; attr "style"
+                "padding:8px 12px;border-radius:12px;border:1px solid #444;\
+                 background:#0b0b0b;color:#fff;font-weight:900;cursor:pointer;"
+            ]
+          [ Vdom.Node.text "Remove Ads ($2)" ]
+      ]
   in
 
   let lobby_card =
@@ -1819,7 +2039,29 @@ let app_component =
            ]
 
        ; (* Primary actions *)
-         lobby_btn
+        lobby_btn
+          ~id:"btn-local-passplay"
+          ~label:"Play (Pass-and-Play)"
+          ~disabled:false
+          ~on_click:(Vdom.Effect.Many
+            [ set_mode Local_pass_and_play
+            ; set_selected None
+            ; set_toast (Some "Local pass-and-play ✓")
+            ; do_reset_local
+            ])
+
+      ; lobby_btn
+          ~id:"btn-local-ai"
+          ~label:"Play vs AI"
+          ~disabled:false
+          ~on_click:(Vdom.Effect.Many
+            [ set_mode Local_vs_ai
+            ; set_selected None
+            ; set_toast (Some "Local vs AI ✓ (you are White)")
+            ; do_reset_local
+            ])
+
+       ; lobby_btn
            ~id:"btn-signin"
            ~label:"Sign in (Guest)"
            ~disabled:is_signed_in
@@ -1904,6 +2146,7 @@ let app_component =
                   ~on_click:(Vdom.Effect.of_sync_fun (fun () ->
                     Js_bridge.call_env1 "joinGame" (String.strip join_room_text)) ())
               ])
+       ; ad_banner
        ])
   in
 
@@ -1916,10 +2159,16 @@ let app_component =
       ; dice_row
       ; debug_panel
       ; buttons
+      ; ad_banner
       ]
   in
 
-  if is_matched then game_page else lobby_card
+  match mode with
+  | Online_firebase ->
+    if is_matched then game_page else lobby_card
+  | Local_pass_and_play
+  | Local_vs_ai ->
+    game_page
 ;;
 
 let () =
